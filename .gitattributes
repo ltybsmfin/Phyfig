@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.png binary
+*.gif binary
+# Preserve exact bytes for vendored files and source/cache checksums.
+third_party/** -text
+assets/formulas/formulas.json -text
+assets/formulas/formula_cache.hpp -text

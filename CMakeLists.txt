@@ -1,0 +1,23 @@
+cmake_minimum_required(VERSION 3.24)
+project(VulkanPlayground VERSION 0.1.0 LANGUAGES CXX)
+
+if(NOT WIN32)
+    message(FATAL_ERROR "The initial examples use Win32 windows and currently require Windows.")
+endif()
+find_package(Vulkan 1.3.250 REQUIRED COMPONENTS glslc)
+include(CTest)
+option(BUILD_EDITOR "Build the physics diagram editor" ON)
+add_subdirectory(src/platform)
+option(BUILD_01_CUBE "Build the first Vulkan example" ON)
+if(BUILD_01_CUBE)
+    add_subdirectory(examples/01_cube)
+endif()
+
+if(BUILD_EDITOR)
+    add_subdirectory(apps/editor)
+endif()
+option(BUILD_02_KINEMATICS "Build the step-by-step projectile motion demo" ON)
+if(BUILD_02_KINEMATICS)
+    add_subdirectory(examples/02_kinematics)
+endif()
+

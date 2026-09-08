@@ -1,0 +1,91 @@
+# 本机验证记录
+
+## 同步窗口与统一操作日志（2026-09-08）
+
+- Debug、Release 均通过 `editor|kinematics` 的 5 项相关测试，正式运行的 Vulkan / 同步校验均为 0 错误、0 警告。
+- 真实 MCP 集成测试验证：窗口可见、已呈现帧递增、已呈现修订与修改后的文档一致；最小化后通过 MCP 定位到 0.8 秒会恢复窗口并呈现该时间的状态；显式 show_editor 也能恢复窗口。
+- 鼠标创建/拖动后，smoke 通过 MCP 来源的共用命令入口修改同一对象，再注入人类 Ctrl+Z，验证撤销结果与日志中的跨来源关联。真实管道/协议另由 MCP 集成测试覆盖。
+- 核心和集成测试验证日志来源、拒绝记录、撤销/重做关联、分页、会话初始状态和 JSONL 落盘。查询和自动播放不增加操作日志。
+- 已检查 `docs/editor-history-preview.png`，来自 SDK 截图层捕获的实际 UI；截图辅助运行的两条 loader 提示与正式零警告运行分开记录。
+- 暂不支持跨会话日志浏览 UI、日志自动回放和重启后的撤销恢复。来源字段表示界面/MCP 输入通道，不是对人或 AI 身份的认证。
+
+---
+
+## 编辑器 v0.1（2026-09-08）
+
+- Debug 全量构建成功；7 项 CTest 全部通过。
+- Release 编辑器、场景核心和运动学示例构建成功；`editor|kinematics` 的 5 项测试全部通过。
+- 关闭两个示例，使用独立构建目录编译 Release `physics_editor` 成功。
+- 编辑器 smoke 注入鼠标事件验证添加圆、画布拖动、未保存退出提示的取消；随后验证命令历史与窗口缩放、最小化恢复、退出。
+- 官方 MCP 客户端真实连接原生窗口，覆盖握手、9 个工具发现、创建/移动、原子失败回滚、旧修订拒绝、未知公式拒绝、撤销/重做、时间轴、中文路径保存/打开、工作区路径限制和最小化时的请求响应。
+- 正式 Vulkan 与同步检查，包含资源销毁阶段，均为 `Validation errors: 0; warnings: 0`。
+- SDK 截图层捕获了动画第 15/40/70 帧；已检查编辑器实际图像，预览存于 `docs/editor-preview.png`。截图辅助运行额外产生两条 loader 加载提示；不计入上述正式测试结果。
+- MCP 已注册为 `physics-editor`，实际启动参数由 `codex mcp get physics-editor` 核对。自动启动流程通过真实客户端验证。当前宿主会在客户端进程结束后回收子窗口，不承诺该窗口跨宿主退出继续存在。
+- Windows 入口使用宽字符命令行并转换为 UTF-8；已使用包含中文工作区及中文文件名的绝对 `--scene` 路径跑完 120 帧 smoke，同步校验 0 错误、0 警告。最终入口重新编译后，Release 的 3 项编辑器测试再次通过。
+- `scenes/vertical-throw.json` 经真实 MCP 客户端的 `save_scene` 工具生成；默认场景包含 13 个可编辑对象。
+
+验证范围仍限本机 Windows / NVIDIA GPU；未测试跨平台、其他 GPU、长时间压力、设备丢失恢复或第三方插件热加载。
+
+---
+
+验证日期：2026-09-07。所有构建及 GPU 测试均在当前电脑执行。
+
+## 环境
+
+| 项目 | 实测结果 |
+| --- | --- |
+| 操作系统 | Windows 10.0.22631 |
+| CMake | 4.4.2 |
+| Visual Studio | 2022，MSBuild 17.11.9 |
+| C++ 编译器 | MSVC 19.41.34120，x64 |
+| Windows SDK | 10.0.22621.0 |
+| Vulkan SDK | 1.4.341.1 |
+| GPU | NVIDIA GeForce RTX 4060 Laptop GPU |
+| GPU Vulkan API | 1.4.329 |
+| NVIDIA 驱动 | 596.36 |
+| 呈现扩展 | 支持 VK_EXT_swapchain_maintenance1，功能已显式开启 |
+
+## 构建与测试
+
+```powershell
+cmake --preset vs2022
+cmake --build --preset debug
+ctest --preset debug --verbose
+cmake --build --preset release
+ctest --test-dir build/vs2022 -C Release --verbose
+```
+
+- Debug 和 Release 均编译成功，MSVC `/W4` 编译输出未报告警告。
+- 两种配置的测试均为 **2 / 2 通过**。
+- `cube_math` 验证近远裁剪面的 Vulkan 深度范围、宽高比、Y 翻转、旋转方向与模型/视图变换顺序。
+- `cube_smoke` 在真实 GPU 上启用 `VK_LAYER_KHRONOS_validation`，并通过 `VK_LAYER_VALIDATE_SYNC=1` 启用同步验证。
+- 每种配置均成功绘制并呈现 120 帧，创建交换链 4 次，覆盖初始窗口、方形窗口、竖屏窗口和最小化后的恢复。
+- 暂停/恢复、方向调整、复位与退出路径通过程序内控制状态检查；不宣称已用外部 UI 自动化逐一按键验证。
+- 清理资源后，最终回调统计均为 **Validation errors: 0; warnings: 0**。
+- CTest 从示例的构建目录启动程序，着色器仍正常加载，验证了不依赖当前工作目录。
+
+最终 GPU 日志摘要：
+
+```text
+Validation: enabled
+GPU: NVIDIA GeForce RTX 4060 Laptop GPU
+Swapchain: 984x721 (3 images)
+Swapchain: 704x681 (3 images)
+Swapchain: 524x761 (3 images)
+Swapchain: 524x761 (3 images)
+Pause/resume/reset: passed
+Rendered frames: 120; swapchain builds: 4; minimized skips: 1
+Validation errors: 0; warnings: 0
+```
+
+## 图像检查
+
+使用 SDK 自带的 `VK_LAYER_LUNARG_screenshot` 从实际呈现帧捕获了横向、近方形和竖向窗口的图像。人工查看了横向与竖向图像：立方体完整可见，面颜色分明，前后遮挡正确。README 的预览来自该程序的实际渲染帧，不是概念图。
+
+截图辅助运行会产生两条 loader 提示，内容是通过 `VK_INSTANCE_LAYERS` 加载截图层；这与不加载截图层的正式同步测试分开记录。最终正常测试的警告数为 0。
+
+原始截图及详细测试日志位于 `build/captures/` 和 `build/vs2022/Testing/Temporary/`；可重复运行测试生成新记录。预览保存在 `docs/cube-preview.png`。
+
+## 验证边界
+
+尚未验证其他 GPU/驱动、非 Windows 系统、设备丢失恢复或长时间压力运行。当前实现是一个独立学习示例，设计取舍见 `learning-notes.md`。

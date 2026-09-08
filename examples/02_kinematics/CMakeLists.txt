@@ -1,0 +1,21 @@
+
+add_executable(vulkan_kinematics main.cpp lesson.cpp sketch.cpp)
+target_compile_features(vulkan_kinematics PRIVATE cxx_std_17)
+target_compile_definitions(vulkan_kinematics PRIVATE VK_USE_PLATFORM_WIN32_KHR WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_link_libraries(vulkan_kinematics PRIVATE physics_vulkan_host)
+set_target_properties(vulkan_kinematics PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/02_kinematics"
+    VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:vulkan_kinematics>")
+if(MSVC)
+    target_compile_options(vulkan_kinematics PRIVATE /W4 /permissive- /utf-8)
+endif()
+if(BUILD_TESTING)
+    add_executable(kinematics_model_test model_test.cpp)
+    target_compile_features(kinematics_model_test PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(kinematics_model_test PRIVATE /W4 /utf-8)
+    endif()
+    add_test(NAME kinematics_model COMMAND kinematics_model_test)
+    add_test(NAME kinematics_smoke COMMAND vulkan_kinematics --smoke-test)
+    set_tests_properties(kinematics_smoke PROPERTIES TIMEOUT 45 ENVIRONMENT "VK_LAYER_VALIDATE_SYNC=1")
+endif()

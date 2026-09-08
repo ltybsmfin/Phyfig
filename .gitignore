@@ -1,0 +1,11 @@
+/build/
+/history/
+/NVIDIA Corporation/
+/out/
+/.vs/
+CMakeUserPresets.json
+*.user
+__pycache__/
+imgui.ini
+scenes/my-scene.json
+*.writing

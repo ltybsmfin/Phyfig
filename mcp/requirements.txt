@@ -1,0 +1,2 @@
+# Official MCP Python SDK; pin the tested v1 line to avoid incompatible v2 APIs.
+mcp==1.30.0
