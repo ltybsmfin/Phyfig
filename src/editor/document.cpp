@@ -1,4 +1,5 @@
 #include "document.hpp"
+#include "component.hpp"
 #include <windows.h>
 #include <algorithm>
 #include <cmath>
@@ -48,11 +49,19 @@ Registry::Registry() {
     auto endpoint = [](const Json& p) { number(p,"dx"); number(p,"dy"); };
     addShape("point","质点",{{"radius",0.16}},radius);
     addShape("circle","圆",{{"radius",1.0}},radius);
+    addShape("arc","圆弧",{{"radius",1.0},{"start",180.0},{"end",360.0}},[radius](const Json& p) {
+        radius(p); const double sweep=number(p,"end")-number(p,"start"); require(sweep>0 && sweep<=360,"Arc must sweep counterclockwise in (0,360] degrees");
+    });
+    addShape("component","组件实例",{{"definition","component"},{"parameters",Json::object()},{"rotation",0.0},{"scale",1.0}},[](const Json& p) {
+        boundedText(p,"definition",128); require(p.at("parameters").is_object(),"Instance parameters must be an object");
+        number(p,"rotation"); require(number(p,"scale")>0 && p["scale"].get<double>()<=100,"Instance scale must be in (0,100]");
+    });
     addShape("line","线段",{{"dx",3.0},{"dy",0.0}},endpoint);
     addShape("arrow","矢量箭头",{{"dx",0.0},{"dy",3.0}},endpoint);
     addShape("ground","地面",{{"dx",12.0},{"dy",0.0}},endpoint);
-    addShape("rectangle","矩形",{{"width",3.0},{"height",2.0}},[](const Json& p) {
+    addShape("rectangle","矩形",{{"width",3.0},{"height",2.0},{"rotation",0.0}},[](const Json& p) {
         require(number(p,"width") > 0 && number(p,"height") > 0,"rectangle dimensions must be positive");
+        if(p.contains("rotation")) number(p,"rotation");
     });
     addShape("text","文字",{{"text","文字"},{"size",20.0}},[](const Json& p) {
         boundedText(p,"text",4096); require(number(p,"size") >= 8 && number(p,"size") <= 96,"text size must be in [8,96]");
@@ -78,7 +87,7 @@ Json Registry::describe() const {
     return result;
 }
 
-Document::Document(Registry registry):registry_(std::move(registry)),scene_(demo()) {
+Document::Document(Registry registry,Json initial):registry_(std::move(registry)),scene_(initial.is_null()?demo():std::move(initial)) {
     registerCommand("create","Create a primitive; id must be unique",[this](Json& s,const Json& a) {
         const auto type=a.at("type").get<std::string>(); Json properties=registry_.get(type).defaults;
         if(a.contains("properties")) properties.update(a.at("properties"));
@@ -108,7 +117,18 @@ Document::Document(Registry registry):registry_(std::move(registry)),scene_(demo
     registerCommand("settings","Update scene title, duration and number of reveal steps",[](Json& s,const Json& a) {
         for(const char* key:{"title","duration","steps"}) if(a.contains(key)) s[key]=a[key];
     });
+    registerCommand("install_component","Publish a definition snapshot into this scene as one transaction",[](Json& s,const Json& a) {
+        require(!s.contains("componentDefinition"),"Publish components into a scene, not a definition");
+        const auto& definition=a.at("definition"); const std::string id=definition.at("componentDefinition").at("id");
+        if(!s.contains("components")) s["components"]=Json::object(); s["components"][id]=definition;
+    });
+    registerCommand("component_settings","Replace public parameter/binding metadata in a definition document",[](Json& s,const Json& a) {
+        require(s.contains("componentDefinition"),"Open a component definition first");
+        s["componentDefinition"].merge_patch(a.at("patch"));
+    });
     validate(scene_);
+    step_=std::min(step_,scene_["steps"].get<int>()-1);
+    checkpoint(0);
 }
 void Document::registerCommand(std::string name,std::string description,Command command) {
     require(!name.empty() && !commands_.count(name),"Duplicate/empty command");
@@ -146,16 +166,43 @@ void Document::validate(const Json& s) const {
         require(it->at("id")!=o.at("id") && !it->contains("binding"),"Binding targets must be independent objects");
     }
     require(s.dump().size()<=900000,"Document exceeds 900 KB limit");
+    if(s.contains("componentDefinition")) components::validateDefinition(s,registry_);
+    if(s.contains("components")) {
+        require(s["components"].is_object() && s["components"].size()<=32,"Scene allows at most 32 definitions");
+        for(auto it=s["components"].begin();it!=s["components"].end();++it) {
+            require(it.value().contains("componentDefinition") && it.value()["componentDefinition"]["id"]==it.key(),"Definition key/id mismatch");
+            require(!it.value().contains("components") || it.value()["components"].empty(),"Nested component libraries are not supported");
+            validate(it.value());
+        }
+    }
+    for(const auto& o:s["objects"]) if(o["type"]=="component") {
+        for(const auto& child:components::instantiate(s,o,{0,0,0,0})) registry_.get(child.at("type")).validate(child.at("properties"));
+    }
     for(const auto& validator:validators_) validator(s);
 }
 void Document::commit(Json next) {
+    require(next.contains("componentDefinition")==scene_.contains("componentDefinition"),"Scene and component definitions are separate document kinds");
+    if(scene_.contains("componentDefinition")) require(next["componentDefinition"].at("id")==scene_["componentDefinition"]["id"],"Component draft identity is immutable");
     validate(next); if(next==scene_) return;
     undo_.push_back({scene_,nextEvent_}); if(undo_.size()>100) undo_.erase(undo_.begin());
     redo_.clear(); scene_=std::move(next); ++revision_; playing_=false;
     time_=std::min(time_,scene_["duration"].get<double>()); step_=std::min(step_,scene_["steps"].get<int>()-1);
 }
 Json Document::snapshot() const {
-    return {{"revision",revision_},{"document",scene_},{"playback",{{"time",time_},{"rate",rate_},{"playing",playing_},{"step",step_}}},{"canUndo",!undo_.empty()},{"canRedo",!redo_.empty()}};
+    return {{"revision",revision_},{"document",scene_},{"displayRevision",displayRevision()},{"previewing",previewing()},
+        {"playback",{{"time",time_},{"rate",rate_},{"playing",playing_},{"step",step_}}},{"canUndo",!undo_.empty()},{"canRedo",!redo_.empty()}};
+}
+void Document::checkpoint(uint64_t event) {
+    checkpoints_.push_back({revision_,event,scene_});
+    if(checkpoints_.size()>101) checkpoints_.pop_front();
+}
+const Json& Document::scene() const {
+    if(previewRevision_) for(const auto& c:checkpoints_) if(c.revision==*previewRevision_) return c.scene;
+    return scene_;
+}
+Json Document::timeline() const {
+    Json states=Json::array(); for(const auto& c:checkpoints_) states.push_back({{"revision",c.revision},{"event",c.event}});
+    return {{"states",states},{"headRevision",revision_},{"displayRevision",displayRevision()},{"previewing",previewing()}};
 }
 Json Document::catalog() const {
     Json commands=Json::array(); for(const auto& [name,c]:commands_) commands.push_back({{"op",name},{"description",c.first}});
@@ -204,6 +251,18 @@ Json Document::history(uint64_t after,size_t limit) const {
         {"journalPath",journalPath_},{"journalError",journalError_},{"lastId",nextEvent_-1}};
 }
 Json Document::dispatch(const Json& request,const std::string& source) {
+    if(request.value("method","")=="get_timeline") return timeline();
+    if(request.value("method","")=="preview") {
+        const auto args=request.value("args",Json::object());
+        if(!args.contains("revision") || args["revision"].is_null()) previewRevision_.reset();
+        else {
+            require(args["revision"].is_number_integer() && args["revision"]>=0,"Preview revision must be non-negative");
+            const uint64_t revision=args["revision"];
+            require(std::any_of(checkpoints_.begin(),checkpoints_.end(),[&](const Checkpoint& c){return c.revision==revision;}),"Requested checkpoint is no longer retained");
+            previewRevision_=revision;
+        }
+        playing_=false; time_=std::min(time_,scene()["duration"].get<double>()); step_=std::min(step_,scene()["steps"].get<int>()-1); return timeline();
+    }
     if(request.value("method","")=="get_history") {
         const auto args=request.value("args",Json::object());
         if(args.contains("after")) require(args["after"].is_number_integer() && args["after"]>=0,"History cursor must be a non-negative integer");
@@ -215,6 +274,7 @@ Json Document::dispatch(const Json& request,const std::string& source) {
     require(source=="human" || source=="mcp" || source=="system","Unknown operation source");
     const auto beforeRevision=revision_; const Json beforePlayback=snapshot()["playback"]; relatedEvent_=0;
     Json event={{"source",source},{"request",request},{"beforeRevision",beforeRevision},{"beforePlayback",beforePlayback}};
+    if(method=="restore_preview" && previewing()) event["restoredRevision"]=displayRevision();
     Json result;
     try { result=executeRequest(request); }
     catch(const std::exception& e) {
@@ -223,8 +283,9 @@ Json Document::dispatch(const Json& request,const std::string& source) {
     }
     event["status"]="success"; event["afterRevision"]=revision_; event["afterPlayback"]=snapshot()["playback"];
     event["documentChanged"]=beforeRevision!=revision_;
+    if(beforeRevision!=revision_) checkpoint(nextEvent_);
     if(relatedEvent_) event["relatedEvent"]=relatedEvent_;
-    if(method=="load") event["resolvedDocument"]=scene_;
+    if(method=="load" || method=="restore_preview") event["resolvedDocument"]=scene_;
     record(std::move(event));
     if(!journalError_.empty()) result["journalWarning"]=journalError_;
     return result;
@@ -233,8 +294,11 @@ Json Document::executeRequest(const Json& request) {
     const auto method=request.at("method").get<std::string>(); const auto args=request.value("args",Json::object());
     if(method=="get_scene") return snapshot();
     if(method=="get_catalog") return catalog();
+    require(!previewing() || method=="restore_preview" || method=="playback","Exit history preview or restore it before editing/saving");
     if(request.contains("expectedRevision")) require(request.at("expectedRevision")==revision_,"Revision conflict: query scene and retry consciously");
-    if(method=="apply") {
+    if(method=="restore_preview") {
+        require(previewing(),"No history state is being previewed"); const Json previous=scene(); commit(previous); previewRevision_.reset();
+    } else if(method=="apply") {
         const auto& edits=args.at("commands"); require(edits.is_array() && !edits.empty() && edits.size()<=1000,"commands must contain 1..1000 edits");
         Json next=scene_;
         for(const auto& command:edits) { const auto op=command.at("op").get<std::string>(); const auto it=commands_.find(op); require(it!=commands_.end(),"Unsupported command: "+op); it->second.second(next,command); }
@@ -249,8 +313,9 @@ Json Document::executeRequest(const Json& request) {
         double time=args.contains("time")?number(args,"time"):time_;
         double rate=args.contains("rate")?number(args,"rate"):rate_;
         int step=args.value("step",step_); const bool playing=args.value("playing",playing_);
-        require(time>=0 && time<=scene_["duration"].get<double>(),"time outside scene duration");
-        require(rate>0 && rate<=10,"rate must be in (0,10]"); require(step>=0 && step<scene_["steps"].get<int>(),"step outside scene steps");
+        require(time>=0 && time<=scene()["duration"].get<double>(),"time outside scene duration");
+        require(rate>0 && rate<=10,"rate must be in (0,10]"); require(step>=0 && step<scene()["steps"].get<int>(),"step outside scene steps");
+        require(!previewing() || !playing,"Playback is paused during history preview");
         time_=time; rate_=rate; step_=step; playing_=playing;
     } else if(method=="save") {
         const auto path=std::filesystem::u8path(args.at("path").get<std::string>());
@@ -273,7 +338,7 @@ Json Document::executeRequest(const Json& request) {
     return snapshot();
 }
 const Json& Document::object(const std::string& id) const {
-    for(const auto& o:scene_["objects"]) if(o["id"]==id) return o;
+    for(const auto& o:scene()["objects"]) if(o["id"]==id) return o;
     throw std::runtime_error("Unknown object: "+id);
 }
 State Document::evaluate(const std::string& id,double time) const {

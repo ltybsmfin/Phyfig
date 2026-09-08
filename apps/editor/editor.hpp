@@ -1,7 +1,8 @@
 #pragma once
-#include "document.hpp"
+#include "workspace.hpp"
 #include "imgui.h"
 #include <map>
+#include <set>
 
 namespace physics_editor {
 class Editor {
@@ -16,12 +17,27 @@ public:
     void smokeInput(unsigned frame);
     void smokeAfterFrame(unsigned frame);
     void smokeCheck();
+    void componentSmokeInput(unsigned frame);
+    void componentSmokeAfterFrame(unsigned frame);
     void captureFrame(unsigned frame,unsigned count);
-    Document& document() { return document_; }
+    Document& document() { return workspace_.document(); }
+    void startJournal(const std::string& directory) { workspace_.startJournal(directory); }
     bool requestClose();
     bool shouldClose() const { return quit_; }
 private:
-    Document document_;
+    Workspace workspace_;
+    std::string scope_="scene", drawnScope_="scene";
+    Document& active() { return workspace_.document(scope_); }
+    void switchScope(const std::string& scope);
+    void componentPanel();
+    void fitCanvas(ImVec2 start,ImVec2 size,const Json& objects);
+    std::pair<ImVec2,ImVec2> bounds(const Json& object,State state);
+    bool fitRequested_=false;
+    ImVec2 lastCanvasSize_{};
+    std::set<std::string> grouped_;
+    char componentId_[128]="new_component", metadata_[32768]{};
+    uint64_t metadataRevision_=~uint64_t(0);
+    char scenePath_[2048]="scenes/my-scene.json", componentPath_[2048]="assets/components/my-component.json";
     std::string selected_="ball", status_="就绪 · 场景单位 m / s";
     char path_[2048]="scenes/my-scene.json";
     char jsonEdit_[16384]{};
@@ -41,6 +57,7 @@ private:
     Json historySelection_;
     unsigned nextId_=1;
     ImVec2 circleButton_{};
+    ImVec2 historySliderStart_{},historySliderEnd_{};
     std::string smokeCreated_;
     using Renderer=std::function<void(ImDrawList*,const Json&,State,ImU32)>;
     std::map<std::string,Renderer> renderers_;

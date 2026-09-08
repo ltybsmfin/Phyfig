@@ -39,7 +39,7 @@ async def verify(executable: Path):
                         return json.loads(next(c.text for c in result.content if c.type == "text"))
 
                     catalog = await call("get_catalog")
-                    assert len(catalog["primitives"]) == 9 and len(catalog["formulas"]["assets"]) == 28
+                    assert len(catalog["primitives"]) == 11 and len(catalog["formulas"]["assets"]) == 28
                     scene = await call("get_scene")
                     initial = scene["document"]
                     scene = await call("apply_commands", {"expected_revision": scene["revision"], "commands": [
@@ -99,6 +99,54 @@ async def verify(executable: Path):
                     # The same log is flushed to disk before the process exits.
                     disk = [json.loads(line) for line in Path(history["journalPath"]).read_text(encoding="utf-8").splitlines()]
                     assert disk[0]["kind"] == "session" and disk[1]["source"] == "mcp"
+                    # Parameterized problem asset, isolated draft and rendered history scrubbing.
+                    scene = await call("load_scene", {"path": "scenes/incline-arc.json", "expected_revision": loaded["revision"]})
+                    head_before = await call("get_history")
+                    draft = await call("open_component", {"id": "incline_arc", "expected_revision": scene["revision"]})
+                    assert draft["scope"] == "component" and draft["revision"] == 0
+                    draft = await call("apply_commands", {"scope": "component", "expected_revision": 0, "commands": [
+                        {"op": "component_settings", "patch": {"parameters": {"R": {"default": 0.4}}}},
+                    ]})
+                    assert (await call("get_scene"))["document"] == scene["document"]
+                    assert await call("get_history") == head_before
+                    rendered = await call("get_view_state")
+                    assert rendered["presentedScope"] == "component" and rendered["presentedRevision"] == draft["revision"], rendered
+                    draft_log = await call("get_history", {"scope": "component"})
+                    assert draft_log["journalPath"] != head_before["journalPath"]
+                    scene = await call("publish_component", {"expected_revision": scene["revision"], "component_revision": draft["revision"]})
+                    assert (await call("get_history"))["lastId"] == head_before["lastId"] + 1
+                    assert (await call("get_history", {"scope": "component"})) == draft_log
+                    assert scene["document"]["components"]["incline_arc"]["componentDefinition"]["parameters"]["R"]["default"] == 0.4
+                    await call("apply_commands", {"expected_revision": scene["revision"], "commands": [
+                        {"op": "update", "id": "apparatus", "patch": {"properties": {"parameters": {"R": -1}}}}
+                    ]}, error=True)
+                    scene = await call("apply_commands", {"expected_revision": scene["revision"], "commands": [
+                        {"op": "update", "id": "apparatus", "patch": {"properties": {"parameters": {"L": 2.3, "angle": 45}}}},
+                        {"op": "create", "id": "second", "type": "component", "properties": {"definition": "incline_arc", "x": 3, "rotation": 20, "scale": 0.7}},
+                    ]})
+                    history_before_preview = await call("get_history")
+                    timeline = await call("get_timeline")
+                    old_revision = head_before["entries"][-1]["afterRevision"]
+                    preview = await call("preview_history", {"revision": old_revision})
+                    assert preview["previewing"] and preview["headRevision"] == scene["revision"]
+                    rendered = await call("get_view_state")
+                    assert rendered["presentedScope"] == "scene" and rendered["presentedRevision"] == old_revision, rendered
+                    assert (await call("get_scene"))["document"] == scene["document"]
+                    assert await call("get_history") == history_before_preview
+                    await call("undo", {"expected_revision": scene["revision"]}, error=True)
+                    restored_scene = await call("restore_history", {"expected_revision": scene["revision"]})
+                    assert not restored_scene["previewing"] and len(restored_scene["document"]["objects"]) == 1
+                    scene_again = await call("undo", {"expected_revision": restored_scene["revision"]})
+                    assert scene_again["document"] == scene["document"]
+                    await call("preview_history", {"revision": 0, "scope": "component"})
+                    assert not (await call("get_scene"))["previewing"]
+                    assert (await call("get_scene", {"scope": "component"}))["previewing"]
+                    await call("preview_history", {"scope": "component"})
+                    await call("close_component", error=True)
+                    await call("save_scene", {"scope": "component", "expected_revision": draft["revision"], "path": "build/component-roundtrip.json", "overwrite": True})
+                    await call("close_component")
+                    await call("get_scene", {"scope": "component"}, error=True)
+                    await call("save_scene", {"expected_revision": scene_again["revision"], "path": "build/components-scene.json", "overwrite": True})
                     # Request normal close so validation includes resource destruction.
                     win32gui.PostMessage(window, win32con.WM_CLOSE, 0, 0)
             code = await asyncio.to_thread(editor.wait, 15)

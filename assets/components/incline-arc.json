@@ -1,0 +1,712 @@
+{
+  "version": 1,
+  "title": "斜面与圆弧轨道",
+  "duration": 3,
+  "steps": 4,
+  "objects": [
+    {
+      "id": "smooth",
+      "type": "line",
+      "name": "光滑 AB",
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 2.0,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "dx": 1,
+        "dy": 0
+      }
+    },
+    {
+      "id": "rough",
+      "type": "ground",
+      "name": "粗糙 BC",
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 2.0,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "dx": 1,
+        "dy": 0
+      }
+    },
+    {
+      "id": "track",
+      "type": "arc",
+      "name": "光滑圆弧 CDE",
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 2.0,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "radius": 0.3,
+        "start": 233,
+        "end": 360
+      }
+    },
+    {
+      "id": "same_height",
+      "type": "line",
+      "name": "B O E 同高",
+      "visible": true,
+      "locked": false,
+      "step": 1,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 1,
+        "color": [
+          0.55,
+          0.63,
+          0.7,
+          1
+        ],
+        "dx": 1,
+        "dy": 0
+      }
+    },
+    {
+      "id": "radius",
+      "type": "line",
+      "name": "半径 OC",
+      "visible": true,
+      "locked": false,
+      "step": 1,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 1,
+        "color": [
+          0.45,
+          0.55,
+          0.65,
+          1
+        ],
+        "dx": 0,
+        "dy": -0.3
+      }
+    },
+    {
+      "id": "vertical",
+      "type": "line",
+      "name": "半径 OD",
+      "visible": true,
+      "locked": false,
+      "step": 1,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 1,
+        "color": [
+          0.45,
+          0.55,
+          0.65,
+          1
+        ],
+        "dx": 0,
+        "dy": -0.3
+      }
+    },
+    {
+      "id": "angle_mark",
+      "type": "arc",
+      "name": "圆心角",
+      "visible": true,
+      "locked": false,
+      "step": 1,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 1,
+        "color": [
+          0.35,
+          0.45,
+          0.6,
+          1
+        ],
+        "radius": 0.1,
+        "start": 233,
+        "end": 270
+      }
+    },
+    {
+      "id": "block",
+      "type": "rectangle",
+      "name": "物块 P",
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 2.0,
+        "color": [
+          0.15,
+          0.46,
+          0.75,
+          1
+        ],
+        "width": 0.1,
+        "height": 0.07,
+        "rotation": -37
+      }
+    },
+    {
+      "id": "label_A",
+      "type": "text",
+      "name": "A",
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 2.0,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "text": "A",
+        "size": 21
+      }
+    },
+    {
+      "id": "label_B",
+      "type": "text",
+      "name": "B",
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 2.0,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "text": "B",
+        "size": 21
+      }
+    },
+    {
+      "id": "label_C",
+      "type": "text",
+      "name": "C",
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 2.0,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "text": "C",
+        "size": 21
+      }
+    },
+    {
+      "id": "label_D",
+      "type": "text",
+      "name": "D",
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 2.0,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "text": "D",
+        "size": 21
+      }
+    },
+    {
+      "id": "label_E",
+      "type": "text",
+      "name": "E",
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 2.0,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "text": "E",
+        "size": 21
+      }
+    },
+    {
+      "id": "label_O",
+      "type": "text",
+      "name": "O",
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 2.0,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "text": "O",
+        "size": 21
+      }
+    },
+    {
+      "id": "label_P",
+      "type": "text",
+      "name": "P",
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 2.0,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "text": "P",
+        "size": 21
+      }
+    },
+    {
+      "id": "angle_label",
+      "type": "text",
+      "name": "角度值",
+      "visible": true,
+      "locked": false,
+      "step": 1,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 2.0,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "text": "37°",
+        "size": 18
+      }
+    },
+    {
+      "id": "radius_label",
+      "type": "text",
+      "name": "半径值",
+      "visible": true,
+      "locked": false,
+      "step": 2,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 2.0,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "text": "R = 0.3 m",
+        "size": 18
+      }
+    },
+    {
+      "id": "dimension",
+      "type": "arrow",
+      "name": "斜面长度",
+      "visible": true,
+      "locked": false,
+      "step": 2,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 1.5,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "dx": 1,
+        "dy": -1
+      }
+    },
+    {
+      "id": "dimension_back",
+      "type": "arrow",
+      "name": "长度反向箭头",
+      "visible": true,
+      "locked": false,
+      "step": 2,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 1.5,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "dx": -0.08,
+        "dy": 0.06
+      }
+    },
+    {
+      "id": "length_label",
+      "type": "text",
+      "name": "长度值",
+      "visible": true,
+      "locked": false,
+      "step": 2,
+      "properties": {
+        "x": 0.0,
+        "y": 0.0,
+        "stroke": 2.0,
+        "color": [
+          0.16,
+          0.22,
+          0.3,
+          1
+        ],
+        "text": "L = 1.9 m",
+        "size": 18
+      }
+    }
+  ],
+  "componentDefinition": {
+    "id": "incline_arc",
+    "parameters": {
+      "R": {
+        "default": 0.3,
+        "min": 0.05,
+        "max": 10,
+        "unit": "m"
+      },
+      "L": {
+        "default": 1.9,
+        "min": 0.1,
+        "max": 30,
+        "unit": "m"
+      },
+      "angle": {
+        "default": 37,
+        "min": 5,
+        "max": 85,
+        "unit": "deg"
+      }
+    },
+    "bindings": [
+      {
+        "object": "smooth",
+        "property": "x",
+        "expression": "-R*sin(angle)-L*cos(angle)"
+      },
+      {
+        "object": "smooth",
+        "property": "y",
+        "expression": "-R*cos(angle)+L*sin(angle)"
+      },
+      {
+        "object": "smooth",
+        "property": "dx",
+        "expression": "-R/sin(angle)-(-R*sin(angle)-L*cos(angle))"
+      },
+      {
+        "object": "smooth",
+        "property": "dy",
+        "expression": "-(-R*cos(angle)+L*sin(angle))"
+      },
+      {
+        "object": "rough",
+        "property": "x",
+        "expression": "-R/sin(angle)"
+      },
+      {
+        "object": "rough",
+        "property": "dx",
+        "expression": "-R*sin(angle)-(-R/sin(angle))"
+      },
+      {
+        "object": "rough",
+        "property": "dy",
+        "expression": "-R*cos(angle)"
+      },
+      {
+        "object": "track",
+        "property": "radius",
+        "expression": "R"
+      },
+      {
+        "object": "track",
+        "property": "start",
+        "expression": "270-angle"
+      },
+      {
+        "object": "same_height",
+        "property": "x",
+        "expression": "-R/sin(angle)"
+      },
+      {
+        "object": "same_height",
+        "property": "dx",
+        "expression": "R-(-R/sin(angle))"
+      },
+      {
+        "object": "radius",
+        "property": "dx",
+        "expression": "-R*sin(angle)"
+      },
+      {
+        "object": "radius",
+        "property": "dy",
+        "expression": "-R*cos(angle)"
+      },
+      {
+        "object": "vertical",
+        "property": "dy",
+        "expression": "-R"
+      },
+      {
+        "object": "angle_mark",
+        "property": "radius",
+        "expression": "R*0.4"
+      },
+      {
+        "object": "angle_mark",
+        "property": "start",
+        "expression": "270-angle"
+      },
+      {
+        "object": "block",
+        "property": "x",
+        "expression": "-R*sin(angle)-L*cos(angle)"
+      },
+      {
+        "object": "block",
+        "property": "y",
+        "expression": "-R*cos(angle)+L*sin(angle)"
+      },
+      {
+        "object": "block",
+        "property": "rotation",
+        "expression": "-angle"
+      },
+      {
+        "object": "label_A",
+        "property": "x",
+        "expression": "(-R*sin(angle)-L*cos(angle))+(-0.12)"
+      },
+      {
+        "object": "label_A",
+        "property": "y",
+        "expression": "(-R*cos(angle)+L*sin(angle))+(0.12)"
+      },
+      {
+        "object": "label_B",
+        "property": "x",
+        "expression": "(-R/sin(angle))+(-0.09)"
+      },
+      {
+        "object": "label_B",
+        "property": "y",
+        "expression": "(0)+(0.11)"
+      },
+      {
+        "object": "label_C",
+        "property": "x",
+        "expression": "(-R*sin(angle))+(-0.02)"
+      },
+      {
+        "object": "label_C",
+        "property": "y",
+        "expression": "(-R*cos(angle))+(-0.065)"
+      },
+      {
+        "object": "label_D",
+        "property": "x",
+        "expression": "(0)+(-0.02)"
+      },
+      {
+        "object": "label_D",
+        "property": "y",
+        "expression": "(-R)+(-0.035)"
+      },
+      {
+        "object": "label_E",
+        "property": "x",
+        "expression": "(R)+(0.04)"
+      },
+      {
+        "object": "label_E",
+        "property": "y",
+        "expression": "(0)+(0.08)"
+      },
+      {
+        "object": "label_O",
+        "property": "x",
+        "expression": "(0)+(-0.04)"
+      },
+      {
+        "object": "label_O",
+        "property": "y",
+        "expression": "(0)+(0.12)"
+      },
+      {
+        "object": "label_P",
+        "property": "x",
+        "expression": "(-R*sin(angle)-L*cos(angle)+.12*cos(angle))+(0.015)"
+      },
+      {
+        "object": "label_P",
+        "property": "y",
+        "expression": "(-R*cos(angle)+L*sin(angle)+.12*cos(angle))+(0.06)"
+      },
+      {
+        "object": "angle_label",
+        "property": "x",
+        "expression": "R*0.13"
+      },
+      {
+        "object": "angle_label",
+        "property": "y",
+        "expression": "-R*0.44"
+      },
+      {
+        "object": "angle_label",
+        "property": "text",
+        "template": "{angle}°"
+      },
+      {
+        "object": "radius_label",
+        "property": "x",
+        "expression": "R+.12"
+      },
+      {
+        "object": "radius_label",
+        "property": "y",
+        "expression": "-R*.35"
+      },
+      {
+        "object": "radius_label",
+        "property": "text",
+        "template": "R = {R} m"
+      },
+      {
+        "object": "dimension",
+        "property": "x",
+        "expression": "-R*sin(angle)-L*cos(angle)-.17*sin(angle)"
+      },
+      {
+        "object": "dimension",
+        "property": "y",
+        "expression": "-R*cos(angle)+L*sin(angle)-.17*cos(angle)"
+      },
+      {
+        "object": "dimension",
+        "property": "dx",
+        "expression": "L*cos(angle)"
+      },
+      {
+        "object": "dimension",
+        "property": "dy",
+        "expression": "-L*sin(angle)"
+      },
+      {
+        "object": "dimension_back",
+        "property": "x",
+        "expression": "(-R*sin(angle)-L*cos(angle)-.17*sin(angle))+.08*cos(angle)"
+      },
+      {
+        "object": "dimension_back",
+        "property": "y",
+        "expression": "(-R*cos(angle)+L*sin(angle)-.17*cos(angle))-.08*sin(angle)"
+      },
+      {
+        "object": "dimension_back",
+        "property": "dx",
+        "expression": "-.08*cos(angle)"
+      },
+      {
+        "object": "dimension_back",
+        "property": "dy",
+        "expression": ".08*sin(angle)"
+      },
+      {
+        "object": "length_label",
+        "property": "x",
+        "expression": "(-R*sin(angle)-L*cos(angle)-.17*sin(angle))+L*.4*cos(angle)-.13"
+      },
+      {
+        "object": "length_label",
+        "property": "y",
+        "expression": "(-R*cos(angle)+L*sin(angle)-.17*cos(angle))-L*.4*sin(angle)-.08"
+      },
+      {
+        "object": "length_label",
+        "property": "text",
+        "template": "L = {L} m"
+      }
+    ],
+    "constraints": [
+      {
+        "expression": "L-R*cos(angle)/sin(angle)",
+        "message": "AC must exceed BC so that A lies above B"
+      }
+    ]
+  }
+}

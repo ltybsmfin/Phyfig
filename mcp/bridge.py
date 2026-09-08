@@ -24,8 +24,8 @@ class EditorBridge:
         except pywintypes.error:
             return False
 
-    def request(self, method: str, args: dict | None = None, revision: int | None = None) -> dict:
-        request = {"method": method, "args": args or {}}
+    def request(self, method: str, args: dict | None = None, revision: int | None = None, scope: str = "scene") -> dict:
+        request = {"method": method, "args": args or {}, "scope": scope}
         if revision is not None:
             request["expectedRevision"] = revision
         data = (json.dumps(request, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
