@@ -1,6 +1,7 @@
 #include "editor.hpp"
 #include "formula.hpp"
 #include "component.hpp"
+#include "animation.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -23,6 +24,8 @@ bool inputNumber(const char* label,double* value) {
 }
 Editor::Editor() {
     initializeRenderers();
+    Json masks=Json::array(); for(const auto& e:formula_cache::entries) masks.push_back({{"name",e.name},{"width",e.width},{"height",e.height},{"rle",std::vector<unsigned char>(e.rle,e.rle+e.bytes)}});
+    workspace_.resources()={{"formulaMasks",masks},{"formulaScale",formula_cache::displayScale}};
     workspace_.addValidator([](const Json& scene) {
         for(const auto& o:scene["objects"]) if(o["type"]=="formula") {
             const std::string key=o["properties"]["formula"]; bool found=false;
@@ -98,8 +101,10 @@ Json Editor::dispatch(const Json& request,const std::string& source) {
         return {{"assets",result},{"note","Precompiled LaTeX assets. To add expressions, edit formulas.json and regenerate the cache before rebuilding."}};
     }
     auto result=workspace_.dispatch(request,source);
-    if(method=="get_history" || method=="get_scene" || method=="get_catalog" || method=="get_timeline") return result;
-    const std::string target=result.value("scope",std::string("scene"));
+    if(method=="get_history" || method=="get_scene" || method=="get_catalog" || method=="get_timeline" || method=="get_project" || method=="sample_animation") return result;
+    if(method=="load_project") { applyLayout(); fitRequested_=false; lastCanvasSize_={}; }
+    if(method=="save_project" || method=="load_project") strcpy_s(projectPath_,request["args"]["path"].get_ref<const std::string&>().c_str());
+    const std::string target=(method=="load_project" || method=="save_project")?scope_:result.value("scope",std::string("scene"));
     if(source!="mcp" || followMcp_) { switchScope(target); if(source=="mcp") showRequested_=true; }
     if(method=="close_component") switchScope("scene");
     dirty_=workspace_.dirty();
@@ -113,10 +118,16 @@ Json Editor::dispatch(const Json& request,const std::string& source) {
     return result;
 }
 void Editor::attempt(const Json& request) { try { auto scoped=request; if(!scoped.contains("scope")) scoped["scope"]=scope_; dispatch(scoped); } catch(const std::exception& e) { status_=std::string("操作失败：")+e.what(); } }
-bool Editor::requestClose() { closeDialog_=workspace_.dirty(); return !closeDialog_; }
+bool Editor::requestClose() { closeDialog_=workspace_.projectDirty(); return !closeDialog_; }
 void Editor::execute(Json commands) { attempt({{"method","apply"},{"args",{{"commands",commands}}}}); }
 void Editor::palette() {
-    ImGui::TextUnformatted("添加图元");
+    if(ImGui::Button("添加图元…"))ImGui::OpenPopup("add-primitive");ImGui::SameLine();
+    if(ImGui::Button("+ 圆")) {
+        std::string id;do{id="circle_"+std::to_string(nextId_++);}while(std::any_of(active().scene()["objects"].begin(),active().scene()["objects"].end(),[&](const Json& o){return o["id"]==id;}));
+        execute(Json::array({{{"op","create"},{"id",id},{"type","circle"},{"name","圆"},{"properties",{{"x",3},{"y",5}}}}}));selected_=id;
+    }
+    {const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();circleButton_={(a.x+b.x)/2,(a.y+b.y)/2};}
+    if(ImGui::BeginPopup("add-primitive")) {
     for(const auto& p:active().registry().describe()) {
         const auto type=p["type"].get<std::string>();
         if(type=="component") continue;
@@ -125,8 +136,10 @@ void Editor::palette() {
             do { id=type+"_"+std::to_string(nextId_++); } while(std::any_of(active().scene()["objects"].begin(),active().scene()["objects"].end(),[&](const Json& o){return o["id"]==id;}));
             execute(Json::array({{{"op","create"},{"id",id},{"type",type},{"name",p["label"]},{"properties",{{"x",3},{"y",5}}}}})); selected_=id;
         }
-        if(type=="circle") { const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax(); circleButton_={(a.x+b.x)/2,(a.y+b.y)/2}; }
+
         if(type=="circle" || type=="ground" || type=="point" || type=="rectangle") ImGui::SameLine();
+    }
+        ImGui::EndPopup();
     }
     ImGui::Separator(); ImGui::TextUnformatted("场景对象（后面的覆盖前面的）");
     std::string remove;
@@ -145,7 +158,7 @@ void Editor::palette() {
 void Editor::inspector() {
     ImGui::TextUnformatted("属性");
     const Json* object=nullptr; for(const auto& o:active().scene()["objects"]) if(o["id"]==selected_) object=&o;
-    if(!object) { if(scope_=="component") componentPanel(); else ImGui::TextWrapped("从画布或左侧选择一个对象。"); return; }
+    if(!object) { if(scope_=="component") componentPanel(); else ImGui::TextWrapped("从画布或上方对象列表选择一个对象。"); return; }
     // Work on a copy: commands may replace the entire document on commit.
     const Json o=*object; const Json p=o["properties"];
     Json displayedProperties=p;
@@ -161,10 +174,10 @@ void Editor::inspector() {
     ImGui::SeparatorText("位置与形状");
     for(const char* key:{"x","y","dx","dy","radius","width","height","stroke","size","scale","start","end","rotation"}) if(p.contains(key)) {
         if(o["type"]=="component" && std::strcmp(key,"stroke")==0) continue;
-        bool bound=false;
+        bool bound=o.contains("animation") && o["animation"]["channels"].contains(key);
         if(scope_=="component") for(const auto& b:active().scene()["componentDefinition"]["bindings"]) if(b["object"]==selected_ && b["property"]==key) bound=true;
         ImGui::BeginDisabled(bound); double value=displayedProperties[key]; if(inputNumber(key,&value)) patch({{"properties",{{key,value}}}}); ImGui::EndDisabled();
-        if(bound) { ImGui::SameLine(); ImGui::TextDisabled("参数驱动"); }
+        if(bound) { ImGui::SameLine(); ImGui::TextDisabled(o.contains("animation")?"动画驱动":"参数驱动"); }
         else if(scope_=="component") { ImGui::SameLine(); ImGui::PushID(key);
             if(ImGui::SmallButton("公开")) {
                 auto meta=active().scene()["componentDefinition"]; std::string parameterName;
@@ -201,7 +214,7 @@ void Editor::inspector() {
         }
         ImGui::TextWrapped("使用预编译 LaTeX 公式库；新增表达式见公式文档。");
     }
-    ImGui::BeginDisabled(scope_=="component"); ImGui::SeparatorText("运动与绑定");
+    ImGui::BeginDisabled(scope_=="component" || o.contains("animation")); ImGui::SeparatorText("运动与绑定");
     if(!o.contains("motion") && !o.contains("binding")) {
         if(ImGui::Button("添加匀加速运动")) patch({{"motion",{{"vx",0},{"vy",0},{"ax",0},{"ay",-9.8}}}});
     }
@@ -260,9 +273,12 @@ void Editor::canvas(ImVec2 size) {
         for(float y=std::fmod(origin_.y-start.y,zoom_);y<size.y;y+=zoom_) draw->AddLine({start.x,start.y+y},{start.x+size.x,start.y+y},IM_COL32(228,231,233,255));
     }
     Json displayObjects=scope_=="component"?components::materialize(active().scene()):active().scene()["objects"];
-    if(fitRequested_) { fitCanvas(start,size,displayObjects); fitRequested_=false; }
+    if(fitRequested_) { try { fitCanvas(start,size,displayObjects); } catch(const std::exception& e) { status_=e.what(); } fitRequested_=false; }
     std::string hit;
-    for(const auto& o:displayObjects) {
+    for(auto o:displayObjects) {
+        try {
+        o["properties"]=animation::properties(o,active().time(),active().scene()["duration"]);
+        active().registry().get(o["type"]).validate(o["properties"]);
         if(!o["visible"].get<bool>() || o["step"].get<int>()>active().step()) continue;
         const auto id=o["id"].get<std::string>(); auto state=scope_=="component"?State{o["properties"]["x"],o["properties"]["y"],0,0}:active().evaluate(id,active().time());
         if(dragging_ && id==selected_) { state.x+=dragPreview_.x; state.y+=dragPreview_.y; }
@@ -310,13 +326,17 @@ void Editor::canvas(ImVec2 size) {
         if(contains) hit=id;
         if(id==selected_) {
             draw->AddCircle(anchor,12,IM_COL32(237,149,48,255),24,2);
-            if(type!="component") draw->AddText({anchor.x+16,anchor.y+10},IM_COL32(163,99,25,255),o["name"].get_ref<const std::string&>().c_str());
+            if(type=="point" || type=="circle" || type=="rectangle") draw->AddText({anchor.x+16,anchor.y+10},IM_COL32(163,99,25,255),o["name"].get_ref<const std::string&>().c_str());
+        }
+        } catch(const std::exception& e) {
+            active().dispatch({{"method","playback"},{"args",{{"playing",false}}}},"preview");
+            status_="动画求值失败（已暂停）："+o["id"].get<std::string>()+" · "+e.what();
         }
     }
     draw->AddText({start.x+16,start.y+12},IM_COL32(105,118,129,255),"运动示意画布 · +y 向上 · 箭头使用独立比例");
     if(hovered && ImGui::IsMouseClicked(0)) {
         if(!hit.empty()) { selected_=hit; const auto& o=active().object(hit);
-            bool boundPosition=false;
+            bool boundPosition=o.contains("animation") && (o["animation"]["channels"].contains("x") || o["animation"]["channels"].contains("y"));
             if(scope_=="component") for(const auto& b:active().scene()["componentDefinition"]["bindings"]) if(b["object"]==hit && (b["property"]=="x" || b["property"]=="y")) boundPosition=true;
             if(!active().previewing() && !boundPosition && !o["locked"].get<bool>()) { if(active().playing()) active().dispatch({{"method","playback"},{"args",{{"playing",false}}}},"human"); dragging_=true; dragStart_=io.MousePos; dragPreview_={}; dragRevision_=active().revision(); }
         } else selected_.clear();
@@ -331,62 +351,89 @@ void Editor::canvas(ImVec2 size) {
     draw->PopClipRect();
 }
 void Editor::draw(float dt) {
-    active().advance(dt); dirty_=workspace_.dirty(); auto* viewport=ImGui::GetMainViewport();
+    if(!styleReady_) {
+        auto& style=ImGui::GetStyle(); ImGui::StyleColorsDark();
+        style.WindowPadding={8,6};style.FramePadding={6,3};style.ItemSpacing={6,5};
+        style.WindowRounding=0;style.ChildRounding=0;style.FrameRounding=2;style.ScrollbarRounding=2;
+        style.Colors[ImGuiCol_WindowBg]={.12f,.12f,.12f,1};style.Colors[ImGuiCol_ChildBg]={.15f,.15f,.15f,1};
+        style.Colors[ImGuiCol_Button]={.24f,.24f,.24f,1};style.Colors[ImGuiCol_FrameBg]={.09f,.09f,.09f,1};
+        style.Colors[ImGuiCol_Header]={.28f,.37f,.46f,1};style.Colors[ImGuiCol_CheckMark]={.95f,.58f,.22f,1};
+        styleReady_=true;
+    }
+    active().advance(dt); dirty_=workspace_.projectDirty(); auto* viewport=ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos); ImGui::SetNextWindowSize(viewport->WorkSize);
-    ImGui::Begin("物理示意编辑器",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings);
-    ImGui::TextUnformatted("物理示意编辑器"); ImGui::SameLine(); ImGui::TextDisabled("C++ / Vulkan    %s%s",active().scene()["title"].get_ref<const std::string&>().c_str(),dirty_?" *":"");
-    if(ImGui::Button(scope_=="scene"?"[主场景]":"主场景")) switchScope("scene"); ImGui::SameLine();
+    ImGui::Begin("物理示意编辑器",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_MenuBar);
+    if(ImGui::BeginMenuBar()) {
+        if(ImGui::BeginMenu("文件")) {
+            if(ImGui::MenuItem("新建空白场景")) {auto empty=Document::demo();empty["objects"]=Json::array();empty["title"]="未命名";attempt({{"method","replace"},{"scope","scene"},{"args",{{"document",empty}}}});}
+            if(ImGui::MenuItem("打开 / 另存工程…"))projectDialogOpen_=true;
+            if(ImGui::MenuItem("保存工程","Ctrl+S"))attempt({{"method","save_project"},{"args",{{"path",projectPath_},{"overwrite",true}}}});
+            ImGui::Separator(); ImGui::SetNextItemWidth(330);ImGui::InputText("JSON 路径",path_,sizeof(path_));
+            if(ImGui::MenuItem("导入当前文档 JSON"))attempt({{"method","load"},{"args",{{"path",path_}}}});
+            if(ImGui::MenuItem("导出当前文档 JSON"))attempt({{"method","save"},{"args",{{"path",path_},{"overwrite",true}}}});
+            ImGui::EndMenu();
+        }
+        if(ImGui::BeginMenu("编辑")) { if(ImGui::MenuItem("撤销","Ctrl+Z"))attempt({{"method","undo"}});if(ImGui::MenuItem("重做","Ctrl+Y"))attempt({{"method","redo"}});ImGui::EndMenu(); }
+        if(ImGui::BeginMenu("场景")) {
+            ImGui::BeginDisabled(active().previewing());double steps=active().scene()["steps"].get<double>();ImGui::SetNextItemWidth(120);
+            if(inputNumber("步骤数",&steps) && steps==std::floor(steps) && steps>=1 && steps<=100)execute(Json::array({{{"op","settings"},{"steps",int(steps)}}}));
+            ImGui::EndDisabled();ImGui::EndMenu();
+        }
+        if(ImGui::BeginMenu("示例")) {
+            if(ImGui::MenuItem("斜面接圆弧"))attempt({{"method","load"},{"scope","scene"},{"args",{{"path","scenes/incline-arc.json"}}}});
+            if(ImGui::MenuItem("上抛运动"))attempt({{"method","replace"},{"scope","scene"},{"args",{{"document",Document::demo()}}}});
+            if(ImGui::MenuItem("公式与阶跃动画")) { attempt({{"method","replace"},{"scope","scene"},{"args",{{"document",animation::demo()}}}});selected_="block";channel_="y";animationWorkspace_=true;historyOpen_=false;fitRequested_=true; }
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
+        if(ImGui::MenuItem("布局",nullptr,!animationWorkspace_)){animationWorkspace_=false;historyOpen_=false;}
+        if(ImGui::MenuItem("动画",nullptr,animationWorkspace_)){animationWorkspace_=true;historyOpen_=false;}
+        ImGui::TextDisabled("   %s%s",active().scene()["title"].get_ref<const std::string&>().c_str(),dirty_?" *":"");
+        ImGui::EndMenuBar();
+    }
+    if(ImGui::Button(scope_=="scene"?"[主场景]":"主场景"))switchScope("scene");ImGui::SameLine();
     if(workspace_.hasComponent()) {
-        if(ImGui::Button(scope_=="component"?"[组件草稿]":"组件草稿")) switchScope("component"); ImGui::SameLine();
-        if(scope_=="component") { if(ImGui::Button("定义与公开参数")) selected_.clear(); ImGui::SameLine(); }
-        if(ImGui::Button("关闭草稿（放弃未保存）")) attempt({{"method","close_component"},{"args",{{"discard",true}}}}); ImGui::SameLine();
+        if(ImGui::Button(scope_=="component"?"[组件草稿]":"组件草稿"))switchScope("component");ImGui::SameLine();
+        if(ImGui::Button("关闭草稿"))attempt({{"method","close_component"},{"args",{{"discard",true}}}});ImGui::SameLine();
     }
-    if(ImGui::Button("斜面接圆弧示例")) attempt({{"method","load"},{"scope","scene"},{"args",{{"path","scenes/incline-arc.json"}}}});
-    ImGui::BeginDisabled(active().previewing());
-    if(ImGui::Button("撤销")) attempt({{"method","undo"}}); ImGui::SameLine();
-    if(ImGui::Button("重做")) attempt({{"method","redo"}}); ImGui::SameLine();
-    ImGui::SetNextItemWidth(280); ImGui::InputText("##path",path_,sizeof(path_)); ImGui::SameLine();
-    if(ImGui::Button("保存")) attempt({{"method","save"},{"args",{{"path",path_},{"overwrite",true}}}}); ImGui::SameLine();
-    if(ImGui::Button("打开")) attempt({{"method","load"},{"args",{{"path",path_}}}}); ImGui::SameLine();
-    ImGui::BeginDisabled(scope_=="component");
-    if(ImGui::Button("上抛示例")) attempt({{"method","replace"},{"args",{{"document",Document::demo()}}}}); ImGui::SameLine();
-    if(ImGui::Button("空白")) { auto empty=Document::demo(); empty["objects"]=Json::array(); empty["title"]="未命名"; attempt({{"method","replace"},{"args",{{"document",empty}}}}); }
-    ImGui::EndDisabled(); ImGui::EndDisabled();
-    ImGui::SameLine(); if(ImGui::Button("操作历史")) historyOpen_=!historyOpen_;
-    ImGui::SameLine(); ImGui::Checkbox("跟随 MCP 显示",&followMcp_);
-    auto& io=ImGui::GetIO(); if(!io.WantTextInput && io.KeyCtrl) {
-        if(ImGui::IsKeyPressed(ImGuiKey_Z,false)) attempt({{"method","undo"}});
-        if(ImGui::IsKeyPressed(ImGuiKey_Y,false)) attempt({{"method","redo"}});
-        if(ImGui::IsKeyPressed(ImGuiKey_S,false)) attempt({{"method","save"},{"args",{{"path",path_},{"overwrite",true}}}});
+    if(ImGui::Button(historyOpen_?"[编辑历史]":"编辑历史"))historyOpen_=!historyOpen_;ImGui::SameLine();
+    ImGui::Checkbox("跟随 MCP",&followMcp_);ImGui::SameLine();ImGui::Checkbox("网格",&grid_);ImGui::SameLine();ImGui::Checkbox("轨迹",&trails_);ImGui::SameLine();
+    if(ImGui::Button("适应画布"))fitRequested_=true;
+    auto& io=ImGui::GetIO();if(!io.WantTextInput && !ImGui::IsPopupOpen("",ImGuiPopupFlags_AnyPopupId)) {
+        if(io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z,false))attempt({{"method","undo"}});
+        if(io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y,false))attempt({{"method","redo"}});
+        if(io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S,false))attempt({{"method","save_project"},{"args",{{"path",projectPath_},{"overwrite",true}}}});
+        if(ImGui::IsKeyPressed(ImGuiKey_Space,false))attempt({{"method","playback"},{"args",{{"playing",!active().playing()}}}});
     }
-    ImGui::Separator();
-    const float height=std::max(150.f,ImGui::GetContentRegionAvail().y-136-(historyOpen_?260.f:0.f));
-    ImGui::BeginChild("palette",{224,height},ImGuiChildFlags_Borders); ImGui::BeginDisabled(active().previewing()); palette(); ImGui::EndDisabled(); ImGui::EndChild(); ImGui::SameLine();
-    ImGui::BeginChild("drawing",{ImGui::GetContentRegionAvail().x-340,height}); canvas(ImGui::GetContentRegionAvail()); ImGui::EndChild(); ImGui::SameLine();
-    ImGui::BeginChild("properties",{0,height},ImGuiChildFlags_Borders); ImGui::BeginDisabled(active().previewing()); inspector(); ImGui::EndDisabled(); ImGui::EndChild();
+    const float available=ImGui::GetContentRegionAvail().y;
+    const bool expanded=historyOpen_ || animationWorkspace_;
+    const float bottom=expanded?std::clamp(bottomHeight_,180.f,std::max(180.f,available-220)):0;
+    const float height=std::max(150.f,available-92-bottom);
+    const float width=ImGui::GetContentRegionAvail().x;
+    sidebarWidth_=std::clamp(sidebarWidth_,260.f,std::max(260.f,width*.48f));
+    ImGui::BeginChild("drawing",{std::max(150.f,width-sidebarWidth_-12),height});canvas(ImGui::GetContentRegionAvail());ImGui::EndChild();ImGui::SameLine(0,3);
+    ImGui::InvisibleButton("##vertical-splitter",{6,height});if(ImGui::IsItemActive())sidebarWidth_-=io.MouseDelta.x;if(ImGui::IsItemHovered())ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);ImGui::SameLine(0,3);
+    ImGui::BeginChild("sidebar",{0,height});
+    ImGui::BeginChild("palette",{0,height*.45f},ImGuiChildFlags_Borders);ImGui::BeginDisabled(active().previewing());palette();ImGui::EndDisabled();ImGui::EndChild();
+    ImGui::BeginChild("properties",{0,0},ImGuiChildFlags_Borders);ImGui::BeginDisabled(active().previewing());inspector();ImGui::EndDisabled();ImGui::EndChild();ImGui::EndChild();
+    if(expanded){ImGui::InvisibleButton("##horizontal-splitter",{-1,5});if(ImGui::IsItemActive())bottomHeight_-=io.MouseDelta.y;if(ImGui::IsItemHovered())ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);}
     ImGui::BeginDisabled(active().previewing());
-    if(ImGui::Button(active().playing()?"暂停":"播放")) attempt({{"method","playback"},{"args",{{"playing",!active().playing()},{"time",active().time()>=active().scene()["duration"].get<double>()?0:active().time()}}}}); ImGui::SameLine();
-    if(ImGui::Button("回到开始")) attempt({{"method","playback"},{"args",{{"time",0},{"playing",false}}}}); ImGui::SameLine();
-    float time=static_cast<float>(active().time()); ImGui::SetNextItemWidth(360);
-    if(ImGui::SliderFloat("时间 / s",&time,0,active().scene()["duration"].get<float>(),"%.3f")) attempt({{"method","playback"},{"args",{{"time",std::min(double(time),active().scene()["duration"].get<double>())},{"playing",false}}}});
-    ImGui::SameLine(); int step=active().step(); ImGui::SetNextItemWidth(140);
-    if(ImGui::SliderInt("解题步骤",&step,0,active().scene()["steps"].get<int>()-1)) attempt({{"method","playback"},{"args",{{"step",step}}}});
-    double duration=active().scene()["duration"]; ImGui::SetNextItemWidth(130);
-    if(inputNumber("总时长 / s",&duration)) execute(Json::array({{{"op","settings"},{"duration",duration}}})); ImGui::SameLine();
-    ImGui::Checkbox("网格",&grid_); ImGui::SameLine(); ImGui::Checkbox("轨迹",&trails_); ImGui::SameLine();
-    if(ImGui::Button("适应画布")) fitRequested_=true;
-    ImGui::SameLine(); double steps=active().scene()["steps"].get<double>(); ImGui::SetNextItemWidth(70);
-    if(inputNumber("步骤数",&steps) && steps==std::floor(steps) && steps>=1 && steps<=100) execute(Json::array({{{"op","settings"},{"steps",static_cast<int>(steps)}}}));
+    if(ImGui::Button(active().playing()?"暂停":"播放"))attempt({{"method","playback"},{"args",{{"playing",!active().playing()},{"time",active().time()>=active().scene()["duration"].get<double>()?0:active().time()}}}});ImGui::SameLine();
+    if(ImGui::Button("|<"))attempt({{"method","playback"},{"args",{{"time",0},{"playing",false}}}});ImGui::SameLine();
+    float time=static_cast<float>(active().time());ImGui::SetNextItemWidth(std::max(160.f,width*.35f));
+    if(ImGui::SliderFloat("时间 / s",&time,0,active().scene()["duration"].get<float>(),"%.3f"))attempt({{"method","playback"},{"args",{{"time",std::min(double(time),active().scene()["duration"].get<double>())},{"playing",false}}}});
+    ImGui::SameLine();int step=active().step();ImGui::SetNextItemWidth(120);if(ImGui::SliderInt("解题步骤",&step,0,active().scene()["steps"].get<int>()-1))attempt({{"method","playback"},{"args",{{"step",step}}}});
+    double duration=active().scene()["duration"];ImGui::SameLine();ImGui::SetNextItemWidth(70);if(inputNumber("时长",&duration))execute(Json::array({{{"op","settings"},{"duration",duration}}}));
     ImGui::EndDisabled();
-    if(active().previewing()) { ImGui::TextColored({1,.6f,.15f,1},"历史预览 r%llu · 只读",(unsigned long long)active().displayRevision()); ImGui::SameLine(); if(ImGui::Button("返回当前状态")) attempt({{"method","preview"}}); }
-    ImGui::TextWrapped("%s",status_.c_str());
-    if(historyOpen_) historyPanel();
+    if(historyOpen_)historyPanel();else if(animationWorkspace_){ImGui::BeginChild("animation-workspace",{0,bottom},ImGuiChildFlags_Borders);animationPanel();ImGui::EndChild();}
+    if(active().previewing()){ImGui::TextColored({1,.6f,.15f,1},"历史预览 r%llu · 只读",(unsigned long long)active().displayRevision());ImGui::SameLine();if(ImGui::SmallButton("返回当前状态"))attempt({{"method","preview"}});}
+    ImGui::TextUnformatted(status_.c_str());storeLayout();projectDialog();
     if(closeDialog_) { ImGui::OpenPopup("保存修改？"); closeDialog_=false; }
     if(ImGui::BeginPopupModal("保存修改？",nullptr,ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted("场景或组件草稿有未保存的修改。\n保存并退出仅保存当前标签页；其他草稿请分别保存。");
+        ImGui::TextUnformatted("工程有未保存的修改。保存工程会包含场景、草稿与历史。");
         if(ImGui::Button("保存并退出")) {
-            attempt({{"method","save"},{"args",{{"path",path_},{"overwrite",true}}}});
-            if(!workspace_.dirty()) { quit_=true; ImGui::CloseCurrentPopup(); }
+            attempt({{"method","save_project"},{"args",{{"path",projectPath_},{"overwrite",true}}}});
+            if(!workspace_.projectDirty()) { quit_=true; ImGui::CloseCurrentPopup(); }
         }
         ImGui::SameLine(); if(ImGui::Button("不保存退出")) { quit_=true; ImGui::CloseCurrentPopup(); }
         ImGui::SameLine(); if(ImGui::Button("取消")) { smokeCloseCancelled_=true; ImGui::CloseCurrentPopup(); }
@@ -397,7 +444,7 @@ void Editor::draw(float dt) {
     ImGui::End();
 }
 void Editor::historyPanel() {
-    ImGui::BeginChild("编辑历史 · 独立于运动时间",{0,250},ImGuiChildFlags_Borders);
+    ImGui::BeginChild("编辑历史 · 独立于运动时间",{0,std::min(bottomHeight_,std::max(180.f,ImGui::GetContentRegionAvail().y-30))},ImGuiChildFlags_Borders);
     ImGui::Text("当前历史：%s · 显示 r%llu / 当前 r%llu · 保留最近 101 个状态",scope_=="scene"?"主场景":"组件定义草稿",(unsigned long long)active().displayRevision(),(unsigned long long)active().revision());
     const auto timeline=active().timeline(); const auto states=timeline["states"];
     int cursor=0; for(size_t i=0;i<states.size();++i) if(states[i]["revision"]==active().displayRevision()) cursor=int(i);

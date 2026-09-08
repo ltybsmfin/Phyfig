@@ -13,7 +13,7 @@ void Editor::switchScope(const std::string& scope) {
     workspace_.document(scope); if(scope_==scope) return;
     strcpy_s(scope_=="scene"?scenePath_:componentPath_,sizeof(path_),path_);
     scope_=scope; strcpy_s(path_,scope_=="scene"?scenePath_:componentPath_);
-    selected_.clear(); grouped_.clear(); dragging_=false; editedId_.clear(); editedRevision_=~uint64_t(0);
+    selected_.clear(); grouped_.clear(); dragging_=false; keyDragging_=false;selectedKey_=-1;timeSeeking_=false; editedId_.clear(); editedRevision_=~uint64_t(0);
     metadataRevision_=~uint64_t(0); historyAfter_=0; historySelection_=nullptr; fitRequested_=true;
 }
 void Editor::componentPanel() {

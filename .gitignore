@@ -9,3 +9,6 @@ __pycache__/
 imgui.ini
 scenes/my-scene.json
 *.writing
+
+# User-authored project containers; checked-in examples live in scenes/.
+/projects/*.physproj

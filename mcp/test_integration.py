@@ -147,6 +147,20 @@ async def verify(executable: Path):
                     await call("close_component")
                     await call("get_scene", {"scope": "component"}, error=True)
                     await call("save_scene", {"expected_revision": scene_again["revision"], "path": "build/components-scene.json", "overwrite": True})
+                    # Portable project saves scoped histories and can continue undo after reopen.
+                    project = await call("get_project")
+                    await call("save_project", {"path": "build/mcp-project.physproj", "expected_token": project["token"], "overwrite": True})
+                    project = await call("get_project")
+                    archive_scene = (await call("get_scene"))["document"]
+                    await call("load_project", {"path": "build/mcp-project.physproj", "expected_token": project["token"]})
+                    reopened = await call("get_scene")
+                    assert reopened["document"] == archive_scene and reopened["canUndo"]
+                    assert (await call("get_project"))["closedDraftCount"] >= 1
+                    anim = {"channels": {"x": {"kind": "formula", "segments": [{"start": 0, "end": reopened["document"]["duration"], "expression": "t^2"}]}}}
+                    await call("apply_commands", {"expected_revision": reopened["revision"], "commands": [{"op": "create", "id": "animated", "type": "point", "animation": anim}]})
+                    assert (await call("sample_animation", {"id": "animated", "time": 0.5}))["state"]["x"] == 0.25
+                    project = await call("get_project")
+                    await call("save_project", {"path": "build/mcp-project.physproj", "expected_token": project["token"], "overwrite": True})
                     # Request normal close so validation includes resource destruction.
                     win32gui.PostMessage(window, win32con.WM_CLOSE, 0, 0)
             code = await asyncio.to_thread(editor.wait, 15)

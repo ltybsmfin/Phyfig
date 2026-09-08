@@ -1,0 +1,176 @@
+{
+  "duration": 6,
+  "objects": [
+    {
+      "id": "ground",
+      "locked": false,
+      "name": "参考地面",
+      "properties": {
+        "color": [
+          0.12,
+          0.22,
+          0.32,
+          1.0
+        ],
+        "dx": 14,
+        "dy": 0.0,
+        "stroke": 2.0,
+        "x": -1,
+        "y": 0.0
+      },
+      "step": 0,
+      "type": "ground",
+      "visible": true
+    },
+    {
+      "animation": {
+        "channels": {
+          "x": {
+            "kind": "formula",
+            "segments": [
+              {
+                "end": 3,
+                "expression": "0.5*t^2",
+                "start": 0
+              },
+              {
+                "end": 6,
+                "expression": "4.5+2*u",
+                "start": 3
+              }
+            ]
+          },
+          "y": {
+            "keys": [
+              {
+                "interpolation": "step",
+                "time": 0,
+                "value": 0
+              },
+              {
+                "interpolation": "step",
+                "time": 3,
+                "value": 1.5
+              },
+              {
+                "time": 6,
+                "value": 1.5
+              }
+            ],
+            "kind": "keys"
+          }
+        }
+      },
+      "id": "block",
+      "locked": false,
+      "name": "示意物块",
+      "properties": {
+        "color": [
+          0.12,
+          0.22,
+          0.32,
+          1.0
+        ],
+        "height": 0.8,
+        "rotation": 0.0,
+        "stroke": 2.0,
+        "width": 0.8,
+        "x": 0.0,
+        "y": 0.0
+      },
+      "step": 0,
+      "type": "rectangle",
+      "visible": true
+    },
+    {
+      "animation": {
+        "channels": {
+          "dy": {
+            "kind": "formula",
+            "segments": [
+              {
+                "end": 6,
+                "expression": "0.5*F",
+                "start": 0
+              }
+            ]
+          }
+        },
+        "parameters": {
+          "F0": 4,
+          "omega": 2
+        },
+        "quantities": {
+          "F": {
+            "expression": "F0*sin(omega*t)",
+            "unit": "N"
+          }
+        }
+      },
+      "id": "force",
+      "locked": false,
+      "name": "F(t) 力的示意箭头",
+      "properties": {
+        "color": [
+          0.85,
+          0.38,
+          0.12,
+          1
+        ],
+        "dx": 0,
+        "dy": 2,
+        "stroke": 2.0,
+        "x": 1,
+        "y": 4
+      },
+      "step": 0,
+      "type": "arrow",
+      "visible": true
+    },
+    {
+      "id": "note",
+      "locked": false,
+      "name": "动画说明",
+      "properties": {
+        "color": [
+          0.12,
+          0.22,
+          0.32,
+          1.0
+        ],
+        "size": 20.0,
+        "stroke": 2.0,
+        "text": "示意动画：t = 3 s 时高度阶跃，水平速度切换",
+        "x": 3,
+        "y": 5
+      },
+      "step": 0,
+      "type": "text",
+      "visible": true
+    },
+    {
+      "id": "force-label",
+      "locked": false,
+      "name": "力的映射说明",
+      "properties": {
+        "color": [
+          0.12,
+          0.22,
+          0.32,
+          1.0
+        ],
+        "size": 20.0,
+        "stroke": 2.0,
+        "text": "F(t) = 4 sin(2t) N；箭头长度 = 0.5 F(t)",
+        "x": 3,
+        "y": 4
+      },
+      "step": 0,
+      "type": "text",
+      "visible": true
+    }
+  ],
+  "steps": 4,
+  "title": "公式驱动与瞬时跳变",
+  "version": 1
+}

@@ -1,5 +1,6 @@
 #include "document.hpp"
 #include "component.hpp"
+#include "animation.hpp"
 #include <windows.h>
 #include <algorithm>
 #include <cmath>
@@ -93,7 +94,7 @@ Document::Document(Registry registry,Json initial):registry_(std::move(registry)
         if(a.contains("properties")) properties.update(a.at("properties"));
         Json o={{"id",a.at("id")},{"type",type},{"name",a.value("name",a.at("id").get<std::string>())},
             {"visible",true},{"locked",false},{"step",0},{"properties",properties}};
-        for(const char* field:{"motion","binding","step","visible","locked"}) if(a.contains(field)) o[field]=a[field];
+        for(const char* field:{"motion","binding","animation","step","visible","locked"}) if(a.contains(field)) o[field]=a[field];
         s["objects"].push_back(std::move(o));
     });
     registerCommand("update","Merge object fields and properties; null removes optional motion/binding",[](Json& s,const Json& a) {
@@ -126,6 +127,21 @@ Document::Document(Registry registry,Json initial):registry_(std::move(registry)
         require(s.contains("componentDefinition"),"Open a component definition first");
         s["componentDefinition"].merge_patch(a.at("patch"));
     });
+    registerCommand("set_animation","Set authored animation or remove it with null",[](Json& s,const Json& a){
+        auto& o=find(s,a.at("id"));if(a.at("animation").is_null())o.erase("animation");else o["animation"]=a["animation"];
+    });
+    registerCommand("set_keyframe","Insert/update one keyframe in an existing key channel",[](Json& s,const Json& a){
+        auto& channel=find(s,a.at("id")).at("animation").at("channels").at(a.at("channel").get<std::string>());
+        require(channel.at("kind")=="keys","Select a keyframe channel");auto& keys=channel.at("keys");const double time=number(a,"time");
+        Json key={{"time",time},{"value",number(a,"value")},{"interpolation",a.value("interpolation",std::string("linear"))}};
+        auto it=std::find_if(keys.begin(),keys.end(),[&](const Json& k){return k.at("time")==time;});if(it==keys.end())keys.push_back(key);else *it=key;
+        std::sort(keys.begin(),keys.end(),[](const Json& left,const Json& right){return left["time"].get<double>()<right["time"].get<double>();});
+    });
+    registerCommand("delete_keyframe","Remove one keyframe; a channel must retain a key",[](Json& s,const Json& a){
+        auto& channel=find(s,a.at("id")).at("animation").at("channels").at(a.at("channel").get<std::string>());
+        require(channel.at("kind")=="keys","Select a keyframe channel");auto& keys=channel.at("keys");const double time=number(a,"time");
+        auto it=std::find_if(keys.begin(),keys.end(),[&](const Json& k){return k.at("time")==time;});require(it!=keys.end(),"Keyframe not found");keys.erase(it);
+    });
     validate(scene_);
     step_=std::min(step_,scene_["steps"].get<int>()-1);
     checkpoint(0);
@@ -150,6 +166,7 @@ void Document::validate(const Json& s) const {
         require(o.at("visible").is_boolean() && o.at("locked").is_boolean(),"visible/locked must be booleans");
         require(o.at("step").is_number_integer() && o.at("step")>=0 && o.at("step")<s.at("steps"),"object reveal step outside scene steps");
         registry_.get(o.at("type")).validate(o.at("properties"));
+        animation::validate(o,s["duration"],registry_);
         if(o.contains("motion")) { const auto& m=o.at("motion"); for(auto key:{"vx","vy","ax","ay"}) number(m,key); }
         if(o.contains("binding")) {
             require(!o.contains("motion"),"A bound object cannot have its own motion");
@@ -164,6 +181,10 @@ void Document::validate(const Json& s) const {
         // and ambiguous chained coordinate systems explicitly instead of guessing.
         const auto it=std::find_if(s["objects"].begin(),s["objects"].end(),[&](const Json& v){return v["id"]==target;});
         require(it->at("id")!=o.at("id") && !it->contains("binding"),"Binding targets must be independent objects");
+        if(o["binding"]["kind"]=="velocity" && it->contains("animation")) {
+            const auto& channels=it->at("animation").at("channels");
+            require((!channels.contains("x") || channels.contains("vx")) && (!channels.contains("y") || channels.contains("vy")),"Authored x/y animation requires explicit vx/vy channels for velocity arrows; no physical derivative is implied");
+        }
     }
     require(s.dump().size()<=900000,"Document exceeds 900 KB limit");
     if(s.contains("componentDefinition")) components::validateDefinition(s,registry_);
@@ -225,6 +246,7 @@ void Document::startJournal(const std::string& directory) {
 void Document::record(Json event) {
     event["id"]=nextEvent_++; event["utc"]=utcNow();
     const auto line=event.dump();
+    audit_.push_back(event);
     historyBytes_+=line.size(); history_.push_back(std::move(event));
     while(history_.size()>1000 || (historyBytes_>16*1024*1024 && history_.size()>1)) {
         historyBytes_-=history_.front().dump().size(); history_.pop_front();
@@ -238,7 +260,7 @@ void Document::record(Json event) {
 Json Document::history(uint64_t after,size_t limit) const {
     require(limit>=1 && limit<=100,"History page limit must be 1..100");
     Json entries=Json::array(); size_t bytes=0; uint64_t cursor=after;
-    for(const auto& event:history_) if(event.at("id").get<uint64_t>()>after) {
+    for(const auto& event:audit_) if(event.at("id").get<uint64_t>()>after) {
         Json summary=event;
         const auto requestBytes=summary.at("request").dump().size();
         if(requestBytes>12000) { summary["request"]={{"method",event["request"].value("method","invalid")}}; summary["requestOmitted"]=true; summary["requestBytes"]=requestBytes; }
@@ -247,10 +269,17 @@ Json Document::history(uint64_t after,size_t limit) const {
         bytes+=count; cursor=event["id"]; entries.push_back(std::move(summary));
     }
     return {{"entries",entries},{"nextCursor",cursor},{"hasMore",cursor<nextEvent_-1},
-        {"firstAvailableId",history_.empty()?nextEvent_:history_.front()["id"].get<uint64_t>()},
+        {"firstAvailableId",audit_.empty()?nextEvent_:uint64_t(1)},
         {"journalPath",journalPath_},{"journalError",journalError_},{"lastId",nextEvent_-1}};
 }
 Json Document::dispatch(const Json& request,const std::string& source) {
+    if(request.value("method","")=="sample_animation") {
+        const auto args=request.at("args");const double time=args.contains("time")?number(args,"time"):time_;const auto& o=object(args.at("id"));
+        require(time>=0 && time<=scene()["duration"].get<double>(),"Sample time outside duration");
+        const auto state=evaluate(o["id"],time);
+        return {{"properties",animation::properties(o,time,scene()["duration"])},{"state",{{"x",state.x},{"y",state.y},{"vx",state.vx},{"vy",state.vy}}},
+            {"animation",o.contains("animation")?animation::evaluate(o["animation"],time,scene()["duration"]):Json()}};
+    }
     if(request.value("method","")=="get_timeline") return timeline();
     if(request.value("method","")=="preview") {
         const auto args=request.value("args",Json::object());
@@ -347,6 +376,10 @@ State Document::evaluate(const std::string& id,double time) const {
         state.x+=vx*time+0.5*ax*time*time; state.y+=vy*time+0.5*ay*time*time; state.vx=vx+ax*time; state.vy=vy+ay*time;
     }
     if(o.contains("binding")) { const auto& b=o["binding"]; const auto target=evaluate(b["target"],time); state.x+=target.x; state.y+=target.y; state.vx=target.vx; state.vy=target.vy; }
+    if(o.contains("animation")) {
+        const auto values=animation::evaluate(o["animation"],time,scene()["duration"])["channels"];
+        state.x=values.value("x",state.x);state.y=values.value("y",state.y);state.vx=values.value("vx",0.0);state.vy=values.value("vy",0.0);
+    }
     return state;
 }
 void Document::advance(double dt) {

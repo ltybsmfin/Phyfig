@@ -1,3 +1,24 @@
+# v0.3 验证记录 · 2026-09-08
+
+- MSVC / CMake 预设 Debug、Release 构建成功。
+- 两种配置的 8 项编辑器测试全部通过：document、components、animation、project，三个原生窗口测试（基础、组件、动画），以及官方 MCP SDK 集成。
+- 最终菜单布局调整后，两种配置的 4 项 GUI/MCP 测试再次通过；核心代码未变化。
+- 三个原生测试各呈现 120 帧，重建交换链 4 次，覆盖缩放、最小化/恢复、关闭销毁；Vulkan 验证与同步验证均为 0 错误 / 0 警告。
+- 新动画测试使用真实 ImGui 鼠标/键盘事件：拖动关键帧只提交一次、Ctrl+Z 撤销、MCP 时间同步、F(t) 非线性箭头，以及运行时除零的暂停/提示。
+- 工程测试包含：搬移文件后用全新 Workspace 加载、超过 1000 条审计不截断、独立组件草稿的重做、已关闭草稿归档、历史预览、损坏草稿拒绝且场景不变、过期 MCP 工程令牌拒绝。
+- 查看了实际截图的完整窗口、缩小窗口和公式错误状态。截图使用 SDK screenshot 层，单独运行中的 2 条显式加载层提示与正式零警告测试分开。
+- 最后去掉选中箭头的重复名称，解决与说明文字重叠；两种配置的动画窗口测试重新通过，正式日志仍为 0 错误 / 0 警告，截图已更新。
+- 已备份旧窗口场景并恢复到新发布版，另存 `projects/` 下的独立工程。旧 JSON 不包含旧撤销栈，旧 JSONL 日志继续保留在本地。
+- 本轮未修改平台渲染资源所有权，未重跑立方体/运动学示例；这里报告编辑器的验证范围。
+
+本地日志：`build/verification/editor-v03-debug.log`、`editor-v03-release.log`、`editor-v03-final-ui-debug.log`、`editor-v03-final-ui-release.log`。MCP 原生销毁检查另见 `build/mcp-editor-test.log`。
+
+![动画工作区](editor-animation-preview.png)
+
+![缩小窗口中的公式曲线](editor-formula-preview.png)
+
+以下保留旧版本验证记录。
+
 # 本机验证记录
 
 ## 参数化组件与历史回溯 v0.2（2026-09-08）

@@ -55,6 +55,8 @@ public:
     int step() const { return step_; }
     uint64_t revision() const { return revision_; }
     static Json demo();
+    Json archive() const;
+    void restoreArchive(const Json& archive); // Restore into a fresh, staged document only.
 private:
     Registry registry_;
     Json scene_;
@@ -62,6 +64,7 @@ private:
     struct UndoEntry { Json scene; uint64_t event; };
     std::vector<UndoEntry> undo_, redo_;
     std::deque<Json> history_;
+    std::vector<Json> audit_;
     size_t historyBytes_=0;
     uint64_t nextEvent_=1, relatedEvent_=0;
     struct Checkpoint { uint64_t revision,event; Json scene; };

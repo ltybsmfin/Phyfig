@@ -19,6 +19,8 @@ public:
     void smokeCheck();
     void componentSmokeInput(unsigned frame);
     void componentSmokeAfterFrame(unsigned frame);
+    void animationSmokeInput(unsigned frame);
+    void animationSmokeAfterFrame(unsigned frame);
     void captureFrame(unsigned frame,unsigned count);
     Document& document() { return workspace_.document(); }
     void startJournal(const std::string& directory) { workspace_.startJournal(directory); }
@@ -71,5 +73,24 @@ private:
     void attempt(const Json& request);
     void initializeRenderers();
     void historyPanel();
+    void animationPanel();
+    void applyLayout();
+    void storeLayout();
+    void projectDialog();
+    bool animationWorkspace_=false,styleReady_=false;
+    float sidebarWidth_=320,bottomHeight_=260;
+    char projectPath_[2048]="projects/untitled.physproj";
+    std::string channel_="x",animationObject_;
+    char animationJson_[65537]{};
+    uint64_t animationRevision_=~uint64_t(0);
+    int selectedKey_=-1;
+    bool keyDragging_=false;
+    bool keyMoved_=false;
+    double keyOldTime_=0,keyTime_=0,keyValue_=0;
+    uint64_t keyRevision_=0;
+    ImVec2 curveStart_{},curveEnd_{};
+    double curveMin_=-1,curveMax_=1;
+    bool projectDialogOpen_=false;
+    bool timeSeeking_=false;
 };
 }

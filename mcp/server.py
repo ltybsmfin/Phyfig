@@ -42,6 +42,9 @@ def get_catalog(scope: str = "scene") -> dict[str, Any]:
         "install_component": {"definition": "complete component definition JSON; publishes a snapshot"},
         "component_settings": {"patch": "merge patch for componentDefinition metadata; component scope only"},
         "settings": {"title": "optional", "duration": "seconds in (0,3600]", "steps": "integer in [1,100]"},
+        "set_animation": {"id": "object id", "animation": "parameters, quantities, channels; null removes animation"},
+        "set_keyframe": {"id": "object id", "channel": "existing key channel", "time": "seconds", "value": "numeric", "interpolation": "linear | step | smooth"},
+        "delete_keyframe": {"id": "object id", "channel": "key channel", "time": "existing key time"},
     }
     result["components"] = {
         "definition": "A scene-shaped JSON with componentDefinition: {id, parameters, bindings, constraints}. Static child primitives; no nested components in v1.",
@@ -54,7 +57,44 @@ def get_catalog(scope: str = "scene") -> dict[str, Any]:
         "sample": "scenes/incline-arc.json and assets/components/incline-arc.json",
     }
     result["formulaLatex"] = __import__("json").loads((Path(__file__).resolve().parents[1] / "assets/formulas/formulas.json").read_text(encoding="utf-8"))
+    result["animation"] = {
+        "parameters": {"F0": 4, "omega": 2},
+        "quantities": {"F": {"expression": "F0*sin(omega*t)", "unit": "N"}},
+        "channels": {"dy": {"kind": "formula", "segments": [{"start": 0, "end": 6, "expression": "0.5*F"}]}},
+        "rules": "sin/cos/tan use RADIANS; sind/cosd use degrees. t global seconds, u local segment seconds. Segments exactly cover duration, right-continuous. keys: [{time,value,interpolation}]. Animation replaces numeric properties; it cannot coexist with motion/binding. F(t) only affects channels explicitly mapped to F, no automatic physics integration."
+    }
     return result
+
+
+@mcp.tool()
+def sample_animation(id: str, time: float, scope: str = "scene") -> dict[str, Any]:
+    """Read evaluated properties and state at time without seeking, editing, or adding history."""
+    return bridge.request("sample_animation", {"id": id, "time": time}, scope=scope)
+
+
+@mcp.tool()
+def get_project() -> dict[str, Any]:
+    """Read project path, layout, dirty flag and concurrency token covering both documents and histories."""
+    return bridge.request("get_project")
+
+
+def project_path(path: str) -> str:
+    resolved = (root / path).resolve()
+    if not resolved.is_relative_to(root) or resolved.suffix.lower() != ".physproj":
+        raise ValueError("Project must be a .physproj file inside the workspace")
+    return str(resolved)
+
+
+@mcp.tool()
+def save_project(path: str, expected_token: dict[str, Any], overwrite: bool = False) -> dict[str, Any]:
+    """Atomically pack both documents, scoped undo/redo, audit, closed drafts, animation, layout and formula masks. Use the latest get_project.token."""
+    return bridge.request("save_project", {"path": project_path(path), "expectedToken": expected_token, "overwrite": overwrite})
+
+
+@mcp.tool()
+def load_project(path: str, expected_token: dict[str, Any], discard: bool = False) -> dict[str, Any]:
+    """Validate the complete project before replacing the workspace. Loading pauses playback. Unsaved edits require explicit discard=true or saving first."""
+    return bridge.request("load_project", {"path": project_path(path), "expectedToken": expected_token, "discard": discard})
 
 
 @mcp.tool()

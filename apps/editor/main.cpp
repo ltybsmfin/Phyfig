@@ -15,12 +15,14 @@ int wmain(int argc,wchar_t** argv) {
     };
     graphics::Options options; options.title=L"物理示意编辑器 / Vulkan + C++";
     std::string pipe="physics-editor";
-    std::string scene;
-    bool componentSmoke=false;
+    std::string scene,project;
+    bool componentSmoke=false,animationSmoke=false;
     for(int i=1;i<argc;++i) {
         const std::string arg=utf8(argv[i]);
         if(arg=="--smoke-test") { options.smoke=true; options.validation=true; pipe="physics-editor-smoke"; }
         else if(arg=="--component-smoke") { options.smoke=true; options.validation=true; componentSmoke=true; pipe="physics-editor-component-smoke"; scene="scenes/incline-arc.json"; }
+        else if(arg=="--animation-smoke") { options.smoke=true;options.validation=true;animationSmoke=true;pipe="physics-editor-animation-smoke"; }
+        else if(arg=="--project" && i+1<argc)project=utf8(argv[++i]);
         else if(arg=="--validation") options.validation=true;
         else if(arg=="--capture-animation") { options.capture=true; pipe="physics-editor-capture"; }
         else if(arg=="--pipe" && i+1<argc) pipe=utf8(argv[++i]);
@@ -34,6 +36,7 @@ int wmain(int argc,wchar_t** argv) {
         physics_editor::Editor editor;
         editor.startJournal((std::filesystem::current_path()/"history").u8string());
         if(!scene.empty()) editor.dispatch({{"method","load"},{"args",{{"path",scene}}}},"system");
+        if(!project.empty())editor.dispatch({{"method","load_project"},{"args",{{"path",project}}}},"system");
         physics_editor::Pipe service(std::wstring(pipe.begin(),pipe.end()));
         graphics::View view;
         view.draw=[&](float dt){editor.draw(dt);};
@@ -44,8 +47,8 @@ int wmain(int argc,wchar_t** argv) {
         view.windowState=[&](bool visible,bool minimized,unsigned frames){editor.windowState(visible,minimized,frames);};
         view.presented=[&](){editor.presented();};
         view.captureFrame=[&](unsigned f,unsigned n){editor.captureFrame(f,n);};
-        view.smokeInput=[&](unsigned frame){if(componentSmoke) editor.componentSmokeInput(frame); else editor.smokeInput(frame);};
-        view.smokeAfterFrame=[&](unsigned frame){if(componentSmoke) editor.componentSmokeAfterFrame(frame); else editor.smokeAfterFrame(frame);};
+        view.smokeInput=[&](unsigned frame){if(animationSmoke)editor.animationSmokeInput(frame); else if(componentSmoke) editor.componentSmokeInput(frame); else editor.smokeInput(frame);};
+        view.smokeAfterFrame=[&](unsigned frame){if(animationSmoke)editor.animationSmokeAfterFrame(frame); else if(componentSmoke) editor.componentSmokeAfterFrame(frame); else editor.smokeAfterFrame(frame);};
         return graphics::run(std::move(view),std::move(options));
     } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }

@@ -14,12 +14,21 @@ public:
     bool hasComponent() const { return bool(component_); }
     bool dirty(const std::string& scope) const;
     bool dirty() const { return dirty("scene") || (component_ && dirty("component")); }
+    Json& layout() { return layout_; }
+    Json& resources() { return resources_; }
+    Json projectInfo() const;
+    bool projectDirty() const;
 private:
-    Document scene_;
+    std::unique_ptr<Document> scene_;
     std::unique_ptr<Document> component_;
     Json savedScene_,savedComponent_;
     std::vector<std::function<void(const Json&)>> validators_;
     std::string journalDirectory_;
     unsigned draftNumber_=0;
+    Json closedDrafts_=Json::array(),layout_=Json::object(),resources_=Json::object();
+    Json savedToken_, projectEvents_=Json::array();
+    std::string projectPath_;
+    Json projectRequest(const Json& request,const std::string& source);
+    Json projectToken() const;
 };
 }
