@@ -4,7 +4,7 @@
 
 - `01_cube`：可旋转彩色立方体，学习三维变换与深度测试。
 - **`02_kinematics`：运动示意动画 demo**，以草稿式场景表现抛体运动，配合 LaTeX 公式和可选的函数图像。
-- **`physics_editor`：物理示意编辑器 v0.1**，编辑图元、运动、绑定和解题步骤，保存场景，并通过 MCP 操作原生窗口。
+- **`physics_editor`：物理示意编辑器 v0.2**，编辑图元、运动和解题步骤；新增圆弧与参数化组件、独立组件草稿、可拖动回溯的历史面板，并通过 MCP 操作原生窗口。
 
 MCP 编辑默认同步显示/恢复原生窗口；顶部“操作历史”可查看人类界面与 MCP 共用的编辑记录、来源和撤销关联。操作日志自动保存在 `history/`。
 
@@ -16,9 +16,13 @@ cmake --build --preset release --target physics_editor
 .\run-editor.ps1
 ```
 
-[编辑器使用与 MCP 接入](docs/editor.md) · [架构和扩展方式](docs/editor-architecture.md)
+[编辑器使用与 MCP 接入](docs/editor.md) · [架构和扩展方式](docs/editor-architecture.md) · [参数化组件与历史回溯](docs/components-and-history.md)
 
-![编辑器实际界面](docs/editor-preview.png)
+![编辑器实际界面](docs/editor-component-preview.png)
+
+点击“斜面接圆弧示例”，修改 R、L、angle 验证相切与同高关系。组件草稿与主场景分别撤销，发布定义才更新主场景。轨道动力学求解尚未实现。
+
+长期维护入口：[开发约定](docs/development.md) · [开发计划](docs/roadmap.md) · [变更日志](docs/changelog.md) · [设计决策](docs/decisions/0001-components-and-history.md)。项目已使用本地 Git 记录基线和后续变更，未配置远程发布。
 
 ## 当前 demo：运动学实验室
 

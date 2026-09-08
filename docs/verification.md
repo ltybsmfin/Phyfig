@@ -1,5 +1,18 @@
 # 本机验证记录
 
+## 参数化组件与历史回溯 v0.2（2026-09-08）
+
+- Debug / Release 均成功构建。最终编辑器回归各 5 项：`editor_document`、`editor_components`、`editor_smoke`、`editor_component_smoke`、`editor_mcp`。本轮还执行过两种配置的全量 9 项测试，原立方体和运动学示例继续通过。
+- `editor_components` 检查多组 R/倾角下 C 在圆上、BC 与 OC 垂直、B/O/E 同高；参数范围、几何组合约束、错误表达式和单位类型拒绝；组件变换与多个实例；草稿/场景历史隔离；一次发布事务；回溯不改 head、恢复可撤销、日志恢复来源及 101 个状态上限。
+- `editor_component_smoke` 在实际 Win32/Vulkan 窗口中注入鼠标按下、移动、释放，验证组件整体拾取/拖动、历史滑块按下和连续拖动；再验证组件页的人类 Ctrl+Z 不消费主场景历史。它与原 editor_smoke 均覆盖 120 帧、4 次交换链构建、缩放和最小化恢复及正常销毁。
+- 官方 MCP SDK 客户端连接真实原生进程，验证 18 个工具中的场景编辑、参数化资产加载、组件草稿/主场景日志隔离、发布、状态预览/恢复、各 scope 的实际呈现修订、最小化后的显示恢复、中文路径持久化和关闭清理。
+- 正式运行 Vulkan + 同步验证均为 **0 错误 / 0 警告**。Debug 最终相关测试日志保存在 `build/verification/editor-v02-debug.log`；Release 全量和最终相关日志分别为 `editor-v02-release.log`、`editor-v02-release-final.log`。这些运行产物不进入 Git。
+- 实际截图使用 SDK 的 `VK_LAYER_LUNARG_screenshot` 捕获 `--component-smoke` 呈现帧；截图辅助运行有 2 条显式加载截图层的 loader 提示，与正式零警告测试分开。检查了正常大小、缩小窗口、组件参数页和只读历史预览；示意图与历史列表可以同时看到。
+- 已打开的旧版 Release 曾占用可执行文件。更新前通过本地接口保存并比对场景备份，再正常关闭。恢复文件与播放状态位于 `build/upgrade/`，旧日志留在 `history/`。不将临时恢复文件作为项目示例提交。
+
+限制：本轮未验证其他 GPU、长时间大文档压力、跨会话自动恢复、嵌套组件或轨道动力学。图片展示的是参数化几何示意，不代表已经求解该题或完成沿轨道的物理动画。
+
+
 ## 同步窗口与统一操作日志（2026-09-08）
 
 - Debug、Release 均通过 `editor|kinematics` 的 5 项相关测试，正式运行的 Vulkan / 同步校验均为 0 错误、0 警告。
