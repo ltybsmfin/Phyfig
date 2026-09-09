@@ -39,7 +39,10 @@ async def verify(executable: Path):
                         return json.loads(next(c.text for c in result.content if c.type == "text"))
 
                     catalog = await call("get_catalog")
-                    assert len(catalog["primitives"]) == 11 and len(catalog["formulas"]["assets"]) == 28
+                    assert len(catalog["primitives"]) == 11
+                    formula_names = catalog["formulas"]["assets"]
+                    assert len(formula_names) == len(set(formula_names))
+                    assert set(formula_names) == set(catalog["formulaLatex"])
                     scene = await call("get_scene")
                     initial = scene["document"]
                     scene = await call("apply_commands", {"expected_revision": scene["revision"], "commands": [

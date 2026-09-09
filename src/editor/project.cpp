@@ -2,10 +2,27 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <map>
 #include <windows.h>
 
 namespace physics_editor {
-namespace { void require(bool ok,const char* message){if(!ok)throw std::runtime_error(message);} }
+namespace {
+void require(bool ok,const char* message){if(!ok)throw std::runtime_error(message);}
+void compatibleResources(const Json& saved,const Json& installed) {
+    if(!installed.contains("formulaMasks")){require(saved==installed,"Project resources require a compatible editor build");return;}
+    require(saved.contains("formulaMasks") && saved["formulaMasks"].is_array(),"Missing project formula masks");
+    auto savedMetadata=saved,installedMetadata=installed;savedMetadata.erase("formulaMasks");installedMetadata.erase("formulaMasks");
+    require(savedMetadata==installedMetadata,"Project formula metadata is incompatible");
+    std::map<std::string,const Json*> masks;
+    for(const auto& mask:installed.at("formulaMasks"))masks.emplace(mask.at("name").get<std::string>(),&mask);
+    std::map<std::string,bool> seen;
+    for(const auto& mask:saved["formulaMasks"]) {
+        const auto name=mask.at("name").get<std::string>();require(seen.emplace(name,true).second,"Duplicate project formula resource");
+        const auto found=masks.find(name);
+        require(found!=masks.end() && *found->second==mask,"Project formula resource is missing or changed in this editor build");
+    }
+}
+}
 Json Workspace::projectToken() const {
     return {{"sceneEvent",scene_->history(0,1)["lastId"]},{"componentEvent",component_?component_->history(0,1)["lastId"]:Json()},
         {"componentId",component_?component_->scene()["componentDefinition"]["id"]:Json()},{"closed",closedDrafts_.size()},
@@ -57,11 +74,12 @@ Json Workspace::projectRequest(const Json& request,const std::string& source) {
         const auto& layout=package["layout"];
         for(const char* key:{"workspace","scope","selected","channel"})if(layout.contains(key))require(layout[key].is_string() && layout[key].get_ref<const std::string&>().size()<1024,"Invalid layout string");
         for(const char* key:{"sidebarWidth","bottomHeight","zoom"})if(layout.contains(key))require(layout[key].is_number() && layout[key]>=0 && layout[key]<=10000,"Invalid layout dimensions");
+        if(layout.contains("referenceZoom"))require(layout["referenceZoom"].is_number() && layout["referenceZoom"]>=8 && layout["referenceZoom"]<=1200,"Invalid pixel reference zoom");
         for(const char* key:{"historyOpen","grid","trails","followMcp"})if(layout.contains(key))require(layout[key].is_boolean(),"Invalid layout flag");
         if(layout.contains("pan")) {require(layout["pan"].is_array() && layout["pan"].size()==2,"Invalid pan");for(const auto& v:layout["pan"])require(v.is_number() && v>=-1e6 && v<=1e6,"Invalid pan offset");}
         require(package.at("resources").is_object(),"Invalid project resources");
-        // Current renderer uses a fixed precompiled formula atlas. Reject incompatible masks rather than silently substituting.
-        if(!resources_.empty())require(package["resources"]==resources_,"Project formula resources require a compatible editor build");
+        // Additions to the installed library are backward compatible; changing an existing mask is not.
+        if(!resources_.empty())compatibleResources(package["resources"],resources_);
         auto events=package.at("projectEvents");require(events.is_array(),"Invalid project event log");
         events.push_back({{"method",method},{"source",source},{"sequence",events.size()+1}});
         if(!journalDirectory_.empty()) {
@@ -69,7 +87,9 @@ Json Workspace::projectRequest(const Json& request,const std::string& source) {
             nextScene->startJournal((base/"scene").u8string());if(nextComponent)nextComponent->startJournal((base/"component").u8string());
         }
         // Every document and all history states have been validated before this swap.
-        scene_=std::move(nextScene);component_=std::move(nextComponent);closedDrafts_=closed;layout_=package["layout"];resources_=package["resources"];
+        scene_=std::move(nextScene);component_=std::move(nextComponent);closedDrafts_=closed;layout_=package["layout"];
+        // Keep the full installed catalog so a subsequent save also packages newly available assets.
+        if(resources_.empty())resources_=package["resources"];
         projectEvents_=std::move(events);projectPath_=path.u8string();savedScene_=scene_->snapshot()["document"];savedComponent_=component_?component_->snapshot()["document"]:Json();savedToken_=projectToken();
     }
     auto result=projectInfo();result["scope"]="scene";return result;

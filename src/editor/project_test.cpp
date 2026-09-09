@@ -38,5 +38,24 @@ int main(){try{
     auto token=restored.projectInfo()["token"];restored.dispatch({{"method","playback"},{"args",{{"time",1}}}});
     rejected=false;try{restored.dispatch({{"method","save_project"},{"args",{{"path",copy},{"overwrite",true},{"expectedToken",token}}}},"mcp");}catch(...){rejected=true;}
     check(rejected,"Stale MCP project token accepted");
+    Workspace oldLibrary;
+    const Json mask={{"name","old"},{"width",1},{"height",1},{"rle",{1,255}}};
+    oldLibrary.resources()={{"formulaScale",.3},{"formulaMasks",Json::array({mask})}};
+    const auto legacy=(base/"legacy-library.physproj").u8string();
+    oldLibrary.dispatch({{"method","save_project"},{"args",{{"path",legacy},{"overwrite",true}}}});
+    Workspace newLibrary;auto extra=mask;extra["name"]="new";
+    newLibrary.resources()={{"formulaScale",.3},{"formulaMasks",Json::array({mask,extra})}};
+    newLibrary.dispatch({{"method","load_project"},{"args",{{"path",legacy}}}});
+    check(newLibrary.resources()["formulaMasks"].size()==2,"Old project replaced installed library; next save would omit new assets");
+    const auto newBefore=newLibrary.document().archive();
+    Json incompatible;{std::ifstream in(std::filesystem::u8path(legacy));in>>incompatible;}
+    incompatible["resources"]["formulaMasks"][0]["rle"]={1,128};
+    {std::ofstream out(std::filesystem::u8path(bad));out<<incompatible;}
+    rejected=false;try{newLibrary.dispatch({{"method","load_project"},{"args",{{"path",bad},{"discard",true}}}});}catch(...){rejected=true;}
+    check(rejected && newLibrary.document().archive()==newBefore,"Changed formula mask silently accepted or replaced live document");
+    incompatible["resources"]=oldLibrary.resources();incompatible["layout"]["referenceZoom"]="invalid";
+    {std::ofstream out(std::filesystem::u8path(bad));out<<incompatible;}
+    rejected=false;try{newLibrary.dispatch({{"method","load_project"},{"args",{{"path",bad},{"discard",true}}}});}catch(...){rejected=true;}
+    check(rejected && newLibrary.document().archive()==newBefore,"Malformed zoom layout escaped staged validation");
     std::cout<<"PASS: portable project, scope archives, closed drafts, preview, continued undo/redo, atomic corruption rejection, concurrency token\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
