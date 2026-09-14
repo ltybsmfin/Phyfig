@@ -40,11 +40,11 @@ int main(){try{
     check(rejected,"Stale MCP project token accepted");
     Workspace oldLibrary;
     const Json mask={{"name","old"},{"width",1},{"height",1},{"rle",{1,255}}};
-    oldLibrary.resources()={{"formulaScale",.3},{"formulaMasks",Json::array({mask})}};
+    oldLibrary.setResources({{"formulaScale",.3},{"formulaMasks",Json::array({mask})}});
     const auto legacy=(base/"legacy-library.physproj").u8string();
     oldLibrary.dispatch({{"method","save_project"},{"args",{{"path",legacy},{"overwrite",true}}}});
     Workspace newLibrary;auto extra=mask;extra["name"]="new";
-    newLibrary.resources()={{"formulaScale",.3},{"formulaMasks",Json::array({mask,extra})}};
+    newLibrary.setResources({{"formulaScale",.3},{"formulaMasks",Json::array({mask,extra})}});
     newLibrary.dispatch({{"method","load_project"},{"args",{{"path",legacy}}}});
     check(newLibrary.resources()["formulaMasks"].size()==2,"Old project replaced installed library; next save would omit new assets");
     const auto newBefore=newLibrary.document().archive();
@@ -57,5 +57,79 @@ int main(){try{
     {std::ofstream out(std::filesystem::u8path(bad));out<<incompatible;}
     rejected=false;try{newLibrary.dispatch({{"method","load_project"},{"args",{{"path",bad},{"discard",true}}}});}catch(...){rejected=true;}
     check(rejected && newLibrary.document().archive()==newBefore,"Malformed zoom layout escaped staged validation");
+    // A4/U2: layout is persisted but excluded from the concurrency token, while
+    // resources stay covered so a background asset cannot be lost silently.
+    {
+        Workspace layoutWorkspace;
+        layoutWorkspace.layout()={{"workspace","animation"},{"sidebarWidth",9999},{"bottomHeight",260},{"historyOpen",true},
+            {"grid",true},{"trails",false},{"followMcp",true},{"scope","scene"},{"selected","ball"},{"channel","x"},
+            {"zoom",55},{"pan",{12.5,-3.5}},{"referenceZoom",55}};
+        const auto layoutToken=layoutWorkspace.projectInfo()["token"];
+        layoutWorkspace.layout()["zoom"]=800;
+        check(layoutToken==layoutWorkspace.projectInfo()["token"],"Layout change altered the project concurrency token");
+        check(!layoutWorkspace.projectDirty(),"Layout change made an unsaved project dirty");
+        const auto layoutPath=(base/"layout.physproj").u8string();
+        layoutWorkspace.dispatch({{"method","save_project"},{"args",{{"path",layoutPath},{"overwrite",true}}}});
+        check(!layoutWorkspace.projectDirty(),"Saving a layout-only project left it dirty");
+        layoutWorkspace.layout()["selected"]="other";
+        check(!layoutWorkspace.projectDirty(),"Selection change made the project dirty");
+        layoutWorkspace.dispatch({{"method","apply"},{"args",{{"commands",Json::array({{{"op","move"},{"id","ball"},{"dx",1},{"dy",0}}})}}}});
+        check(layoutWorkspace.projectDirty(),"Document edit did not make the project dirty");
+        auto scaleResources=layoutWorkspace.resources();scaleResources["formulaScale"]=0.5;layoutWorkspace.setResources(scaleResources);
+        const auto resourceToken=layoutWorkspace.projectInfo()["token"];
+        scaleResources=layoutWorkspace.resources();scaleResources["formulaScale"]=0.75;layoutWorkspace.setResources(scaleResources);
+        check(resourceToken!=layoutWorkspace.projectInfo()["token"],"Resource change escaped the project token");
+        scaleResources=layoutWorkspace.resources();scaleResources["formulaScale"]=0.5;layoutWorkspace.setResources(scaleResources);
+        check(resourceToken==layoutWorkspace.projectInfo()["token"],"Restoring a resource did not restore the token");
+        layoutWorkspace.dispatch({{"method","save_project"},{"args",{{"path",layoutPath},{"overwrite",true}}}});
+        Workspace layoutRestored;
+        layoutRestored.dispatch({{"method","load_project"},{"args",{{"path",layoutPath}}}});
+        check(!layoutRestored.projectDirty(),"Loaded layout was reported dirty");
+        check(layoutRestored.layout()==layoutWorkspace.layout(),"Layout was not preserved across save/load");
+        // applyLayout clamps presentation values after load; normalization must
+        // not look like a user edit.
+        layoutRestored.layout()["sidebarWidth"]=700;
+        check(!layoutRestored.projectDirty(),"Editor layout normalization made the loaded project dirty");
+    }
+    // Task 1: setResources commits the whole library, the fingerprint covers
+    // RLE/latex/extension fields, a read-only traversal never dirties the
+    // project, and empty containers/null cannot collide.
+    {
+        Workspace maskWorkspace;
+        const Json maskAsset={{"name","mask"},{"width",2},{"height",1},{"rle",{1,10,1,20}},{"latex","x"}};
+        maskWorkspace.setResources({{"formulaScale",.3},{"formulaMasks",Json::array({maskAsset})}});
+        const auto maskToken=maskWorkspace.projectInfo()["token"];
+        for(int i=0;i<3;++i)
+            check(maskWorkspace.resources()["formulaMasks"][0]["name"]=="mask","Read-only library access failed");
+        check(maskToken==maskWorkspace.projectInfo()["token"],"Read-only resource access changed the token");
+        check(!maskWorkspace.projectDirty(),"Read-only resource access made the project dirty");
+        // Same name and dimensions, RLE payload changed: the token must change.
+        auto changed=maskWorkspace.resources();changed["formulaMasks"][0]["rle"]={1,11,1,20};maskWorkspace.setResources(changed);
+        check(maskToken!=maskWorkspace.projectInfo()["token"],"Same-name same-size RLE change escaped the project token");
+        auto maskRestoredResources=maskWorkspace.resources();maskRestoredResources["formulaMasks"][0]["rle"]={1,10,1,20};maskWorkspace.setResources(maskRestoredResources);
+        check(maskToken==maskWorkspace.projectInfo()["token"],"Restoring the RLE payload did not restore the token");
+        check(maskWorkspace.projectInfo()["token"]==maskWorkspace.projectInfo()["token"],"Repeated token query was not stable");
+        auto latex=maskWorkspace.resources();latex["formulaMasks"][0]["latex"]="y";maskWorkspace.setResources(latex);
+        check(maskToken!=maskWorkspace.projectInfo()["token"],"latex change escaped the project token");
+        maskWorkspace.setResources(maskRestoredResources);
+        auto maskExtra=maskWorkspace.resources();maskExtra["formulaMasks"][0]["extra"]={{"k",1}};maskWorkspace.setResources(maskExtra);
+        check(maskToken!=maskWorkspace.projectInfo()["token"],"Unknown resource field escaped the project token");
+        maskWorkspace.setResources(maskRestoredResources);
+        check(maskToken==maskWorkspace.projectInfo()["token"],"Removing the unknown field did not restore the token");
+        Workspace emptyWorkspace;
+        emptyWorkspace.setResources({{"formulaScale",.3},{"formulaMasks",Json::array()},{"meta",Json::array()}});
+        const auto emptyToken=emptyWorkspace.projectInfo()["token"];
+        auto objectMeta=emptyWorkspace.resources();objectMeta["meta"]=Json::object();emptyWorkspace.setResources(objectMeta);
+        check(emptyToken!=emptyWorkspace.projectInfo()["token"],"Empty array and empty object collided in the fingerprint");
+        auto nullMeta=emptyWorkspace.resources();nullMeta["meta"]=nullptr;emptyWorkspace.setResources(nullMeta);
+        check(emptyToken!=emptyWorkspace.projectInfo()["token"],"Empty array and null collided in the fingerprint");
+        const auto maskPath=(base/"mask-token.physproj").u8string();
+        maskWorkspace.dispatch({{"method","save_project"},{"args",{{"path",maskPath},{"overwrite",true}}}});
+        check(!maskWorkspace.projectDirty(),"Mask project stayed dirty after save");
+        Workspace maskRestored;
+        maskRestored.dispatch({{"method","load_project"},{"args",{{"path",maskPath}}}});
+        check(!maskRestored.projectDirty(),"Reloaded mask project was reported dirty");
+        check(maskRestored.resources()==maskWorkspace.resources(),"Reloaded mask library differs from the saved one");
+    }
     std::cout<<"PASS: portable project, scope archives, closed drafts, preview, continued undo/redo, atomic corruption rejection, concurrency token\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

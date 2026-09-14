@@ -5,20 +5,43 @@
 #include <algorithm>
 #include <stdexcept>
 #include <vector>
+#include <string>
 
 // Formula masks join the existing ImGui font atlas, so its Vulkan lifetime and
-// resize handling cover both text and mathematics. No runtime TeX subprocesses.
+// resize handling cover text and mathematics. Runtime workers supply CPU masks;
+// only the render thread rebuilds/uploads the atlas between frames.
 namespace math_text {
 inline std::vector<int> rectangles;
+struct Mask { std::string name; int width,height; std::vector<unsigned char> rle; };
+inline std::vector<Mask> custom;
+inline std::vector<Mask> pendingCustom;
+inline bool pending=false;
+inline void setCustom(std::vector<Mask> masks) {
+    bool same=masks.size()==custom.size();
+    for(size_t i=0;same && i<masks.size();++i) same=masks[i].name==custom[i].name && masks[i].width==custom[i].width && masks[i].height==custom[i].height && masks[i].rle==custom[i].rle;
+    if(!same){pendingCustom=std::move(masks);pending=true;}
+    else {pendingCustom.clear();pending=false;}
+}
+inline size_t builtinCount(){return sizeof(formula_cache::entries)/sizeof(formula_cache::entries[0]);}
+inline formula_cache::Entry entry(size_t index){
+    if(index<builtinCount())return formula_cache::entries[index];
+    const auto& a=custom.at(index-builtinCount());return {a.name.c_str(),a.width,a.height,a.rle.data(),a.rle.size()};
+}
 inline void initialize(ImFontAtlas& atlas) {
+    if(pending)custom=std::move(pendingCustom);
     rectangles.clear();
-    for (const auto& formula : formula_cache::entries)
+    atlas.CustomRects.clear();
+    atlas.PackIdMouseCursors=atlas.PackIdLines=-1;
+    for(size_t i=0;i<builtinCount()+custom.size();++i){const auto formula=entry(i);
         rectangles.push_back(atlas.AddCustomRectRegular(formula.width, formula.height));
+    }
+    atlas.ClearTexData();
+    if(!atlas.Build())throw std::runtime_error("Cannot build formula atlas");
     unsigned char* pixels = nullptr; int width=0, height=0;
     atlas.GetTexDataAsRGBA32(&pixels,&width,&height);
     if (!pixels) throw std::runtime_error("Cannot build formula atlas");
     for (std::size_t i=0;i<rectangles.size();++i) {
-        const auto& formula=formula_cache::entries[i];
+        const auto formula=entry(i);
         const auto* rect=atlas.GetCustomRectByIndex(rectangles[i]);
         if (!rect->IsPacked()) throw std::runtime_error("Formula did not fit in font atlas");
         int position=0;
@@ -35,14 +58,15 @@ inline void initialize(ImFontAtlas& atlas) {
         }
         if(position!=formula.width*formula.height) throw std::runtime_error("Incomplete formula mask");
     }
+    pending=false;
 }
 inline int find(const char* name) {
     for (std::size_t i=0;i<rectangles.size();++i)
-        if(std::strcmp(name,formula_cache::entries[i].name)==0) return static_cast<int>(i);
+        if(std::strcmp(name,entry(i).name)==0) return static_cast<int>(i);
     throw std::runtime_error("Unknown formula name");
 }
 inline ImVec2 size(const char* name, float scale=1) {
-    const auto& f=formula_cache::entries[find(name)];
+    const auto f=entry(find(name));
     return {f.width*formula_cache::displayScale*scale,f.height*formula_cache::displayScale*scale};
 }
 inline void draw(ImDrawList* list, ImVec2 p, const char* name, ImU32 tint, float scale=1) {

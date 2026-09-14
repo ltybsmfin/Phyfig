@@ -1,0 +1,40 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build physics editor (Debug)",
+      "detail": "build-editor.ps1 -DebugBuild: shared build entry, incremental Debug physics_editor",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/build-editor.ps1",
+        "-DebugBuild"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$msCompile"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "group": "build"
+    },
+    {
+      "label": "build physics editor (Release)",
+      "detail": "build-editor.ps1: shared build entry, incremental Release physics_editor",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/build-editor.ps1"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$msCompile"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "group": "build"
+    }
+  ]
+}

@@ -14,12 +14,17 @@
 在项目根目录执行：
 
 ```powershell
-cmake --preset vs2022
-cmake --build --preset release --target physics_editor
 .\run-editor.ps1
 ```
 
-调试版使用 `cmake --build --preset debug --target physics_editor` 和 `./run-editor.ps1 -DebugBuild`。VS Code 选择新增的 **Physics editor (Debug)** 配置；Visual Studio 将 `physics_editor` 设为启动项目。可以用 `-DBUILD_01_CUBE=OFF -DBUILD_02_KINEMATICS=OFF` 单独配置编辑器。
+`run-editor.ps1` 先调用共用构建入口 `build-editor.ps1` 做增量编译，成功后才启动固定的 `build/vs2022/bin/editor/Release/physics_editor.exe`。构建以 cmake 退出码为准：失败立即停止，提示先保存并关闭已打开的编辑器窗口，不会退回旧的可执行文件，也不会自动结束进程；脚本没有跳过编译的开关。脚本会等待编辑器退出并把它的退出码返回给调用者，因此编辑器运行期间该终端保持占用。Debug 与 Release 是同一份源码的两个配置：
+
+```powershell
+.\run-editor.ps1 -DebugBuild                          # build/vs2022/bin/editor/Debug/physics_editor.exe
+.\run-editor.ps1 -Project .\path\to\example.physproj  # 可选：启动时打开工程
+```
+
+`build-editor.ps1` 只做两件事：`cmake --preset vs2022` 配置，然后 `cmake --build --preset release|debug --target physics_editor` 增量构建。需要单独配置编辑器时仍可加 `-DBUILD_01_CUBE=OFF -DBUILD_02_KINEMATICS=OFF`；`build/verify-runtime` 是历史验证用过的临时构建目录，不是常用入口。VS Code 的 **Physics editor (Debug)** 配置通过 preLaunchTask 调用同一入口（`.vscode/tasks.json`），通用 CMake 目标配置不变；Visual Studio 仍将 `physics_editor` 设为启动项目。
 
 ## 编辑流程
 
@@ -30,7 +35,7 @@ cmake --build --preset release --target physics_editor
 5. 使用播放、时间轴和“解题步骤”预览。对象的“出现步骤”决定何时显示，步骤从 0 编号。“步骤数”减少到已有对象步骤以下时会拒绝，应先修改对象。
 6. 使用文件菜单保存或打开 `.physproj` 工程；`.json` 路径仅用于当前文档导入/导出。文档导入、删除、修改都可撤销/重做；工程打开先验证再切换，不属于文档内撤销；关闭有未保存修改的窗口会提示。运行时的播放进度不写入场景文件，重新打开从当前合法进度预览，可点击“|<”。
 
-中键平移、滚轮缩放、“适应画布”居中显示当前内容。Ctrl+Z / Ctrl+Y 撤销重做，Ctrl+S 保存整个工程。完整 JSON 编辑区保存未识别的扩展字段，核心结构错误会拒绝提交。颜色控件的连续调整目前产生多条历史记录；拖动画布只产生一条。
+中键平移、滚轮整体缩放（含文字、公式）、“适应画布”居中显示当前内容。Ctrl+Z / Ctrl+Y 撤销重做，Ctrl+S 保存整个工程。完整 JSON 编辑区保存未识别的扩展字段，核心结构错误会拒绝提交。颜色控件的一次连续调整合并为一条历史（控件松开或选择切换时提交/取消）；拖动画布也只产生一条。滚轮缩放超过 `referenceZoom` 时是位图字形/公式遮罩的放大，画面会变软，这是固有代价（R3）。
 
 ## 单位与物理含义
 
@@ -43,7 +48,7 @@ cmake --build --preset release --target physics_editor
 
 速度箭头长度使用单独的比例，不与位移共用量纲；地面只是示意图元，不会自动产生碰撞。默认上抛场景将时长设为返回地面的时间；改变初始条件后需要同步调整时长、文字和公式。这一版不自动证明文字与运动参数一致，也不解析自然语言题目、不自动求解或执行通用物理仿真。
 
-公式采用真实 LaTeX 排版缓存，可选 28 个公式资源。新增表达式修改 [公式资源](../assets/formulas/README.md) 并重新生成、编译；没有任意 LaTeX 的实时输入控件。文字字号、线宽与公式显示大小使用屏幕尺寸，便于缩放场景时阅读。
+公式可选内置资源，也可直接输入受限数学 LaTeX，在后台编译成工程资产；无需修改源码或重新编译。文字、公式随画布整体缩放。受限 LaTeX 不加载 CJK 宏包，公式图元只能排版数学；中文与公式混排请拆成“文字图元 + 公式图元”（R5）。操作和依赖见 [公式与导出](runtime-formulas-and-export.md)。
 
 ## MCP
 
@@ -53,21 +58,30 @@ cmake --build --preset release --target physics_editor
 .\mcp\setup.ps1
 ```
 
-注册到本机 Codex（需已经编译 Release）：
+推荐用脚本启动 MCP（先增量编译，再以 stdio 传输运行服务）：
+
+```powershell
+.\run-editor-mcp.ps1              # 先增量编译，再启动 MCP 服务
+.\run-editor-mcp.ps1 -DebugBuild
+```
+
+它固定调用 `build/mcp-venv/Scripts/python.exe mcp/server.py --workspace <仓库根> --editor-transport stdio --start-editor <刚构建的 exe>`。stdio 传输会启动自己的可见编辑器窗口，不连接已有命名管道；MCP 的 stdout 只承载协议，构建进度和诊断全部写 stderr，脚本也不重定向、不缓冲、不吞掉 Python 的标准输入输出。缺少 `build/mcp-venv` 时会明确提示先运行 `.\mcp\setup.ps1`。注册到宿主时请带上 `-NoProfile -ExecutionPolicy Bypass -File`：配置文件或交互式输出写进 stdout 会破坏协议流。宿主在服务启动前会等待本轮配置与增量构建（首次配置通常数秒到数十秒），超时上限很小的宿主应先把构建跑热。
+
+注册到本机 Codex（需已经编译 Release；也可以把 `run-editor-mcp.ps1` 注册成服务命令，让宿主每次先增量构建）：
 
 ```powershell
 .\mcp\setup.ps1 -RegisterCodex
 ```
 
-服务名 `physics-editor`，使用官方 MCP Python SDK 1.30.0 的 stdio 传输。服务可自动启动编辑器；宿主结束 MCP 进程时可能一并回收自动启动的窗口，因此退出或重载服务前应先保存场景。需要独立使用窗口时，先手动运行 `run-editor.ps1`，MCP 会连接已有窗口。Codex 重新加载 MCP 配置后才会发现新增工具；接入方式见 [官方文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
+服务名 `physics-editor`，使用官方 MCP Python SDK 1.30.0 的 stdio 传输。服务可自动启动编辑器；宿主结束 MCP 进程时可能一并回收自动启动的窗口，因此退出或重载服务前应先保存场景。`setup.ps1 -RegisterCodex` 注册的是连接命名管道的默认传输，需要独立控制窗口的生命周期；`run-editor-mcp.ps1` 使用的 stdio 传输总是启动自己的编辑器窗口，两者不要同时用来操作同一个场景。Codex 重新加载 MCP 配置后才会发现新增工具；接入方式见 [官方文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
 
-提供 22 个工具，基础 12 个为：`get_catalog`、`get_scene`、`apply_commands`、`replace_scene`、`undo`、`redo`、`set_playback`、`save_scene`、`load_scene`、`show_editor`、`get_view_state`、`get_history`。新增 6 个组件与历史回溯工具见 [接口说明](components-and-history.md#mcp-合同)。文档工具接受 scope=scene/component，默认 scene；不根据当前标签页猜测范围。先发现能力和读取场景；修改时提交最近读取的 `expected_revision`。不同客户端同改场景时，旧修订被拒绝，不会默默覆盖。调用超时后先查询状态，不能直接重发修改。
+提供 26 个工具，基础 12 个为：`get_catalog`、`get_scene`、`apply_commands`、`replace_scene`、`undo`、`redo`、`set_playback`、`save_scene`、`load_scene`、`show_editor`、`get_view_state`、`get_history`。新增 6 个组件与历史回溯工具见 [接口说明](components-and-history.md#mcp-合同)。文档工具接受 scope=scene/component，默认 scene；不根据当前标签页猜测范围。先发现能力和读取场景；修改时提交最近读取的 `expected_revision`。不同客户端同改场景时，旧修订被拒绝，不会默默覆盖。调用超时后先查询状态，不能直接重发修改。
 
 ### MCP 操作时显示原生窗口
 
 默认勾选“跟随 MCP 显示”。MCP 修改场景或时间轴时，编辑器会显示窗口、从最小化状态恢复，并使用与人类操作相同的画布渲染。没有另建一份无界面的场景。Windows 可能限制应用抢占键盘焦点，因此恢复显示不承诺始终抢占前台输入。
 
-`show_editor` 可显式请求显示窗口。`get_view_state` 返回可见/最小化状态、已呈现帧数、最近已呈现画布的 `presentedRevision` 和 `presentedTime`；这能区分“命令已接受”和“新状态已提交呈现”，不表示显示器完成物理扫描。取消“跟随 MCP 显示”后可以自行最小化窗口，后台请求仍正常响应。
+`show_editor` 可显式请求显示窗口。`get_view_state` 返回可见/最小化状态、已呈现帧数、最近已呈现画布的 `presentedRevision` 和 `presentedTime`；这能区分“命令已接受”和“新状态已提交呈现”，不表示显示器完成物理扫描。画布几何按**物理帧缓冲像素**报告：`canvasWidth/canvasHeight`、`zoom`、`referenceZoom`、`origin`、`pan` 都乘过 `framebufferScale`，并附带该比例；`origin` 是画布内部原点到世界原点的像素偏移。取消“跟随 MCP 显示”后可以自行最小化窗口，后台请求仍正常响应。
 
 ### 人和 MCP 的统一操作历史
 
@@ -106,6 +120,8 @@ cmake --build --preset release --target physics_editor
 
 同一管道名只允许一个编辑器，避免误连。标准输出只用于 MCP；原生程序日志走服务的标准错误。
 
+显式 `--stdio` 是编辑器侧的 JSON 行传输（stdin/stdout），协议占用标准输出、诊断重定向到标准错误；它经 Python MCP bridge 封装后对外就是标准 MCP 协议，native 侧只负责 JSON 行传输，因此不是“非完整 MCP”。MCP 服务端 stdio 接入已经 MCP 端到端验证通过（`editor_stdio`），不再待接入。新增 MCP 工具（如 `set_formula`/`export_animation`）对已连接客户端不会自动可见，客户端需要刷新/重连，服务端不保证推送（A5）。运行目录可用 `--data-dir` 显式指定；显式目录不可用时不会静默替换，只有自动模式才回退到可写目录并在 `[runtime]` 行报告，场景与资源目录分别解析。窗口启动位置按显示器工作区夹取，避免侧栏与播放条落到屏幕外（U1）；这不是完整的逐显示器 DPI 矩阵处理。
+
 ## 验证
 
 ```powershell
@@ -120,4 +136,4 @@ ctest --preset debug --verbose
 
 ## 尚未包含
 
-任意多个同时打开的文档、自动恢复、嵌套组件/层级、通用约束求解、碰撞、沿曲线轨道的动力学、逐字推导动画、任意 LaTeX 即时排版、插件热加载、导出视频或运行时截图 MCP 工具。现在的目标是一个能编辑、保存并接受程序控制的可靠小型基础版本。
+任意多个同时打开的文档、自动恢复、嵌套组件/层级、通用约束求解、碰撞、沿曲线轨道的动力学、逐字推导动画、完整 TeX 文档排版、插件热加载或运行时截图 MCP 工具。受限数学 LaTeX 和动画导出已实现。现在的目标是一个能编辑、保存并接受程序控制的可靠小型基础版本。

@@ -30,6 +30,7 @@ async def verify(executable: Path):
                     names = {tool.name for tool in listed.tools}
                     assert {"get_scene", "get_catalog", "apply_commands", "undo", "redo", "save_scene", "load_scene", "set_playback", "replace_scene"} <= names
                     assert {"show_editor", "get_view_state", "get_history"} <= names
+                    assert {"set_formula", "export_animation", "get_job", "cancel_job"} <= names
 
                     async def call(name, args=None, error=False):
                         result = await session.call_tool(name, args or {})
@@ -45,14 +46,31 @@ async def verify(executable: Path):
                     assert set(formula_names) == set(catalog["formulaLatex"])
                     scene = await call("get_scene")
                     initial = scene["document"]
+                    assert (await call("get_job", {"kind": "formula"}))["status"] == "idle"
+                    await call("set_formula", {"id": "invalid-formula", "latex": r"\input{a}", "expected_revision": scene["revision"]})
+                    for _ in range(100):
+                        job = await call("get_job", {"kind": "formula"})
+                        if job["status"] != "running": break
+                        await asyncio.sleep(.05)
+                    assert job["status"] == "failed", job
+                    assert (await call("get_scene"))["revision"] == scene["revision"]
                     scene = await call("apply_commands", {"expected_revision": scene["revision"], "commands": [
                         {"op": "create", "id": "mcp-note", "type": "text", "name": "MCP 创建的注释", "properties": {"x": 4, "y": 2.4, "text": "MCP 已连接 · 与鼠标共用撤销记录"}},
                         {"op": "move", "id": "title", "dx": 0, "dy": 0.4},
+                        {"op": "create", "id": "glyph-probe", "type": "text", "properties": {"x": 1, "y": 1, "text": "缺字探针 😀"}},
                     ]})
                     assert scene["revision"] == 1
                     rendered = await call("get_view_state")
                     assert rendered["visible"] and not rendered["minimized"] and rendered["presentedFrames"] > 0
                     assert rendered["presentedRevision"] == scene["revision"], rendered
+                    # A1: presented-frame viewport metadata is explicit and distinct
+                    # from the latest drawn canvas; missing glyphs are reported with
+                    # their full code point (the emoji is non-BMP).
+                    assert rendered["canvasReady"] is True and rendered["canvasWidth"] > 0 and rendered["canvasHeight"] > 0, rendered
+                    assert rendered["viewportSource"] == "presented" and rendered["scope"] == "scene", rendered
+                    assert rendered["presented"]["source"] == "presented" and rendered["view"]["source"] == "live", rendered
+                    assert len(rendered["origin"]) == 2 and len(rendered["pan"]) == 2 and rendered["zoom"] > 0, rendered
+                    assert any(w["codepoint"] == 0x1F600 for w in rendered["textWarnings"]), rendered["textWarnings"]
                     await call("apply_commands", {"expected_revision": 0, "commands": [{"op": "delete", "id": "mcp-note"}]}, error=True)
                     before = await call("get_scene")
                     await call("apply_commands", {"expected_revision": 1, "commands": [
@@ -64,7 +82,7 @@ async def verify(executable: Path):
                     scene = await call("undo", {"expected_revision": 1})
                     assert scene["document"] == initial
                     scene = await call("redo", {"expected_revision": scene["revision"]})
-                    assert len(scene["document"]["objects"]) == len(initial["objects"]) + 1
+                    assert len(scene["document"]["objects"]) == len(initial["objects"]) + 2
                     scene = await call("set_playback", {"time": 15 / 9.8, "step": 3, "playing": False})
                     assert abs(scene["playback"]["time"] - 15 / 9.8) < 1e-9
                     await call("save_scene", {"path": "build/mcp-往返.json", "expected_revision": scene["revision"], "overwrite": True})
@@ -177,6 +195,20 @@ async def verify(executable: Path):
     print("PASS: MCP lifecycle/editing; atomicity; history sources/undo links/disk journal; actual presented revisions; auto-restore and visible rendering; clean Vulkan shutdown")
 
 
+def verify_server_arguments():
+    """Delta 2: stdio transport without --start-editor is rejected before any editor starts.
+
+    The live stdio session (server -> private editor) is covered by
+    test_runtime_assets.py, which has the longer budget this second editor needs.
+    """
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "mcp/server.py"), "--editor-transport", "stdio"],
+        capture_output=True, text=True, timeout=30)
+    assert result.returncode == 2 and "--start-editor" in result.stderr, (result.returncode, result.stderr)
+    print("PASS: --editor-transport stdio requires --start-editor")
+
+
 if __name__ == "__main__":
     executable = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / "build/vs2022/bin/editor/Debug/physics_editor.exe"
+    verify_server_arguments()
     asyncio.run(verify(executable))

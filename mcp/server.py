@@ -8,14 +8,19 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from bridge import EditorBridge, scene_path
+from bridge import EditorBridge, StdioEditorBridge, scene_path
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--pipe", default="physics-editor")
 parser.add_argument("--workspace", type=Path, default=Path(__file__).resolve().parents[1])
 parser.add_argument("--start-editor", type=Path)
+# Explicit transport selection. pipe (default) attaches to (or starts) a named-pipe
+# editor; stdio always starts its own editor and speaks JSON lines on its
+# stdin/stdout, so it has no pipe fallback and cannot attach to an existing one.
+parser.add_argument("--editor-transport", choices=("pipe", "stdio"), default="pipe",
+                    help="pipe (default): named-pipe editor; stdio: start a private editor with --stdio")
 options = parser.parse_args()
-bridge = EditorBridge(options.pipe)
+bridge: Any = EditorBridge(options.pipe)
 root = options.workspace.resolve()
 mcp = FastMCP("Physics diagram editor", instructions=(
     "Operate the live C++ Vulkan editor. First inspect get_catalog and get_scene. "
@@ -57,6 +62,7 @@ def get_catalog(scope: str = "scene") -> dict[str, Any]:
         "sample": "scenes/incline-arc.json and assets/components/incline-arc.json",
     }
     result["formulaLatex"] = __import__("json").loads((Path(__file__).resolve().parents[1] / "assets/formulas/formulas.json").read_text(encoding="utf-8"))
+    result["formulaLatex"].update(result["formulas"].get("latex", {}))
     result["animation"] = {
         "parameters": {"F0": 4, "omega": 2},
         "quantities": {"F": {"expression": "F0*sin(omega*t)", "unit": "N"}},
@@ -67,6 +73,59 @@ def get_catalog(scope: str = "scene") -> dict[str, Any]:
 
 
 @mcp.tool()
+def set_formula(id: str, latex: str, expected_revision: int, scope: str = "scene",
+                x: float = 3, y: float = 5, python: str = "python") -> dict[str, Any]:
+    """Compile restricted math LaTeX asynchronously, then create/update one formula as an undoable edit.
+    Requires MiKTeX plus Python with Pillow/pypdfium2. Poll get_job(kind='formula').
+    A concurrent document edit causes a conflict, never an overwrite. Saved projects embed the mask and source.
+    """
+    return bridge.request("set_formula", {"id": id, "latex": latex, "x": x, "y": y, "python": python},
+                          revision=expected_revision, scope=scope)
+
+
+@mcp.tool()
+def export_animation(output: str, expected_revision: int, scope: str = "scene", format: str = "mp4",
+                     width: int = 0, height: int = 0, view_mode: str = "current", fps: int = 24,
+                     overwrite: bool = False, python: str = "python", ffmpeg: str = "ffmpeg") -> dict[str, Any]:
+    """Export the target scope's frozen document/step and full duration in the background; poll get_job('export').
+
+    view_mode='current' (default) replays that scope's last recorded canvas
+    composition; width=height=0 matches the recorded canvas size, while explicit
+    even dimensions letterbox it. view_mode='fit' is an independent viewport for
+    the target scope and requires explicit even width/height. A missing recorded
+    view is rejected with a message suggesting fit; another scope's layout is
+    never borrowed. Explicit sizes must be even, 16..4096; canvas-match rounds
+    odd recorded sizes down by one pixel (MP4/GIF yuv420p needs even dimensions)
+    and rejects oversize instead of silently scaling to 4096. Frames are
+    ceil(duration*fps), capped by rejecting >3600 rather than changing speed.
+    """
+    if view_mode not in ("current", "fit"):
+        raise ValueError("view_mode must be 'current' or 'fit'")
+    if (width == 0) != (height == 0):
+        raise ValueError("width and height must be paired: both 0 to match the canvas, or both explicit")
+    if view_mode == "fit" and width == 0:
+        raise ValueError("view_mode='fit' requires explicit even width/height; width=height=0 only matches the current canvas")
+    destination = (root / output).resolve()
+    if not destination.is_relative_to(root):
+        raise ValueError("Export destination must be inside the workspace")
+    return bridge.request("export_animation", {"output": str(destination), "format": format, "width": width,
+        "height": height, "view_mode": view_mode, "fps": fps, "overwrite": overwrite, "python": python, "ffmpeg": ffmpeg},
+        revision=expected_revision, scope=scope)
+
+
+@mcp.tool()
+def get_job(kind: str = "formula") -> dict[str, Any]:
+    """Read the latest formula/export job id, status, result or failure without changing document history."""
+    return bridge.request("get_job", {"kind": kind})
+
+
+@mcp.tool()
+def cancel_job(kind: str, id: str) -> dict[str, Any]:
+    """Cancel the matching owned background process tree. Re-read get_job before cancelling."""
+    return bridge.request("cancel_job", {"kind": kind, "id": id})
+
+
+@mcp.tool()
 def sample_animation(id: str, time: float, scope: str = "scene") -> dict[str, Any]:
     """Read evaluated properties and state at time without seeking, editing, or adding history."""
     return bridge.request("sample_animation", {"id": id, "time": time}, scope=scope)
@@ -74,7 +133,7 @@ def sample_animation(id: str, time: float, scope: str = "scene") -> dict[str, An
 
 @mcp.tool()
 def get_project() -> dict[str, Any]:
-    """Read project path, layout, dirty flag and concurrency token covering both documents and histories."""
+    """Read project path, layout, dirty flag and concurrency token covering both documents, resources, histories and drafts."""
     return bridge.request("get_project")
 
 
@@ -105,7 +164,16 @@ def show_editor() -> dict[str, Any]:
 
 @mcp.tool()
 def get_view_state() -> dict[str, Any]:
-    """Read native window visibility, minimized state, and the revision/time of the last presented canvas frame."""
+    """Read native window visibility, minimized state, the last presented frame and the latest drawn canvas.
+
+    Top-level canvasWidth/canvasHeight (physical pixels), zoom, referenceZoom,
+    origin (canvas-local pixels, +y up), pan, scope, canvasReady and
+    viewportSource describe the last *presented* frame; the nested `view` object
+    describes the latest drawn canvas (source='live') and is never used to fake a
+    presented value. `presented` repeats the presented viewport explicitly.
+    textWarnings lists document text objects whose glyphs the current font is
+    missing, with object id and full Unicode code point.
+    """
     return bridge.request("get_view_state")
 
 
@@ -200,12 +268,36 @@ def restore_history(expected_revision: int, scope: str = "scene") -> dict[str, A
     return bridge.request("restore_preview", revision=expected_revision, scope=scope)
 
 
-if __name__ == "__main__":
-    if options.start_editor:
-        if not bridge.available():
-            subprocess.Popen([str(options.start_editor.resolve()), "--pipe", options.pipe], cwd=root,
-                             stdin=subprocess.DEVNULL, stdout=sys.stderr, stderr=sys.stderr,
-                             creationflags=subprocess.CREATE_NO_WINDOW)
+def main() -> int:
+    """Select the transport, start at most one editor, and own only that child."""
+    global bridge
+    if options.editor_transport == "stdio" and options.start_editor is None:
+        parser.error("--editor-transport stdio requires --start-editor PATH: "
+                     "the stdio bridge starts its own editor and never attaches to a pipe")
+    stdio_editor = None
+    try:
+        if options.editor_transport == "stdio":
+            # StdioEditorBridge owns exactly one editor process; the named-pipe
+            # branch below must stay out of this path so no second editor starts.
+            stdio_editor = StdioEditorBridge(options.start_editor, cwd=root, stderr_sink=sys.stderr)
+            bridge = stdio_editor
             bridge.request("get_scene")
-        bridge.request("show_editor")
-    mcp.run(transport="stdio")
+            bridge.request("show_editor")
+        elif options.start_editor is not None:
+            if not bridge.available():
+                subprocess.Popen([str(options.start_editor.resolve()), "--pipe", options.pipe], cwd=root,
+                                 stdin=subprocess.DEVNULL, stdout=sys.stderr, stderr=sys.stderr,
+                                 creationflags=subprocess.CREATE_NO_WINDOW)
+                bridge.request("get_scene")
+            bridge.request("show_editor")
+        mcp.run(transport="stdio")
+    finally:
+        # Close only the child this process started; an editor attached through a
+        # named pipe belongs to its own launcher and is left running.
+        if stdio_editor is not None:
+            stdio_editor.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

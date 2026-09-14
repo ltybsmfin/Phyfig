@@ -4,23 +4,36 @@
 
 - `01_cube`：可旋转彩色立方体，学习三维变换与深度测试。
 - **`02_kinematics`：运动示意动画 demo**，以草稿式场景表现抛体运动，配合 LaTeX 公式和可选的函数图像。
-- **`physics_editor`：物理示意编辑器 v0.3**，编辑图元、运动和解题步骤；支持参数化组件、独立历史、公式/关键帧动画及独立工程，并通过 MCP 操作原生窗口。
+- **`physics_editor`：物理示意编辑器 v0.4**，编辑图元、运动和解题步骤；支持参数化组件、独立历史、公式/关键帧动画及独立工程，支持运行时 LaTeX、整体缩放与 PNG/MP4/GIF 导出，并通过 MCP 操作原生窗口。
 
 MCP 编辑默认同步显示/恢复原生窗口；顶部“编辑历史”可查看人类界面与 MCP 共用的编辑记录、来源和撤销关联。操作日志自动保存在 `history/`。
 
 ## 物理示意编辑器
 
 ```powershell
-cmake --preset vs2022
-cmake --build --preset release --target physics_editor
-.\run-editor.ps1
+.\run-editor.ps1                                  # 增量编译 Release 后启动（推荐入口）
+.\run-editor.ps1 -DebugBuild
+.\run-editor.ps1 -Project .\path\to\example.physproj
 ```
 
-[动画工作区与独立工程](docs/animation-and-projects.md) · [编辑器使用与 MCP 接入](docs/editor.md) · [架构和扩展方式](docs/editor-architecture.md) · [参数化组件与历史回溯](docs/components-and-history.md)
+`run-editor.ps1` 先调用共用构建入口 `build-editor.ps1`：按 checked-in `vs2022` 预设配置，再用 `release`（或 `debug`）构建预设增量编译 `physics_editor`，成功后才启动固定的 `build/vs2022/bin/editor/<配置>/physics_editor.exe`。构建失败会立即停止并提示先保存、关闭已打开的编辑器窗口，不会退回旧的可执行文件，也不会自动结束进程。Debug 与 Release 是同一份源码的两个配置，等价的显式命令是：
+
+```powershell
+cmake --preset vs2022
+cmake --build --preset release --target physics_editor
+```
+
+`build/verify-runtime` 是历史验证用过的临时独立构建目录，不是日常入口。MCP 接入推荐 `.\run-editor-mcp.ps1`：同样先增量构建，再以 stdio 传输启动服务，构建与诊断只写标准错误，stdout 仅承载 MCP 协议。
+
+[公式与导出](docs/runtime-formulas-and-export.md) · [动画工作区与独立工程](docs/animation-and-projects.md) · [编辑器使用与 MCP 接入](docs/editor.md) · [架构和扩展方式](docs/editor-architecture.md) · [参数化组件与历史回溯](docs/components-and-history.md)
 
 ![动画工作区实际界面](docs/editor-animation-preview.png)
 
 通过“示例 → 斜面接圆弧”，修改 R、L、angle 验证相切与同高关系。组件草稿与主场景分别撤销，发布定义才更新主场景。轨道动力学求解尚未实现。
+
+本轮已修复视图操作误报未保存、颜色拖动产生多条历史、下标缺字无提示等问题，并改进高分辨率文字导出。支持查询画布视图、匹配画布尺寸或独立取景导出，以及 stdio 接入；超过 3600 帧会明确拒绝。Debug 与 Release 全量回归各 19 项通过，专项验收覆盖缺字、2K 导出、未显示组件导出、工程加载和超帧拒绝。
+
+已知限制：高倍放大仍可能使位图文字和公式变软；组件实例缩放不改变字号；中文与数学公式需分别使用文字和公式图元。窗口布局只在本机验证，未覆盖完整 DPI 矩阵；新增 MCP 工具可能需要刷新或重连。完整状态见 [编辑器缺陷验收清单](docs/reviews/2026-09-10-editor-defects.md)。
 
 长期维护入口：[开发约定](docs/development.md) · [开发计划](docs/roadmap.md) · [变更日志](docs/changelog.md) · [设计决策](docs/decisions/0001-components-and-history.md)。项目已使用本地 Git 记录基线和后续变更，未配置远程发布。
 

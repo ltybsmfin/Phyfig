@@ -1,12 +1,28 @@
 #include "workspace.hpp"
 #include "component.hpp"
+#include "formula_resources.hpp"
 #include <filesystem>
 #include <set>
 #include <stdexcept>
+#include <utility>
 
 namespace physics_editor {
 namespace { void require(bool ok,const char* message) { if(!ok) throw std::runtime_error(message); } }
 Workspace::Workspace():scene_(std::make_unique<Document>()),savedScene_(scene_->scene()) {}
+// Whole-resource commit: the shared JSON object keeps its identity, so formula
+// validators captured as shared_ptr keep seeing the current library, while the
+// cached fingerprint is dropped so the next token reflects the new content.
+void Workspace::setResources(Json resources) {
+    *resources_=std::move(resources);
+    resourceFingerprintValid_=false;
+}
+void Workspace::validateFormulas(){
+    if(checkFormulas_)return;
+    formula_resources::validate(*resources_);
+    scene_->addValidator([r=resources_](const Json& s){formula_resources::scene(s,*r);});
+    if(component_)component_->addValidator([r=resources_](const Json& s){formula_resources::scene(s,*r);});
+    installedResources_=*resources_;checkFormulas_=true;
+}
 Document& Workspace::document(const std::string& scope) {
     require(scope=="scene" || scope=="component","scope must be scene or component");
     if(scope=="scene") return *scene_;
@@ -45,6 +61,7 @@ Json Workspace::dispatch(const Json& request,const std::string& source) {
         }
         auto draft=std::make_unique<Document>(Registry{},definition);
         for(const auto& validator:validators_) draft->addValidator(validator);
+        if(checkFormulas_)draft->addValidator([r=resources_](const Json& s){formula_resources::scene(s,*r);});
         if(!journalDirectory_.empty()) draft->startJournal((std::filesystem::u8path(journalDirectory_)/"components"/std::to_string(++draftNumber_)).u8string());
         savedComponent_=definition; component_=std::move(draft);
         auto result=component_->snapshot(); result["scope"]="component"; return result;

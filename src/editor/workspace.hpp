@@ -11,11 +11,16 @@ public:
     Json dispatch(const Json& request,const std::string& source="human");
     void startJournal(const std::string& directory);
     void addValidator(std::function<void(const Json&)> validator);
+    void validateFormulas();
     bool hasComponent() const { return bool(component_); }
     bool dirty(const std::string& scope) const;
     bool dirty() const { return dirty("scene") || (component_ && dirty("component")); }
     Json& layout() { return layout_; }
-    Json& resources() { return resources_; }
+    // Single read accessor plus a whole-resource commit. An escaping reference
+    // can no longer mutate the library behind the project token's back; every
+    // writer goes through setResources(), which invalidates the fingerprint.
+    const Json& resources() const { return *resources_; }
+    void setResources(Json resources);
     Json projectInfo() const;
     bool projectDirty() const;
 private:
@@ -25,9 +30,14 @@ private:
     std::vector<std::function<void(const Json&)>> validators_;
     std::string journalDirectory_;
     unsigned draftNumber_=0;
-    Json closedDrafts_=Json::array(),layout_=Json::object(),resources_=Json::object();
+    Json closedDrafts_=Json::array(),layout_=Json::object();
+    std::shared_ptr<Json> resources_=std::make_shared<Json>(Json::object());
     Json savedToken_, projectEvents_=Json::array();
     std::string projectPath_;
+    mutable std::string resourceFingerprint_;
+    mutable bool resourceFingerprintValid_=false;
+    bool checkFormulas_=false;
+    Json installedResources_;
     Json projectRequest(const Json& request,const std::string& source);
     Json projectToken() const;
 };

@@ -8,6 +8,7 @@
       "program": "${workspaceFolder}/build/vs2022/bin/editor/Debug/physics_editor.exe",
       "args": ["--validation"],
       "cwd": "${workspaceFolder}",
+      "preLaunchTask": "build physics editor (Debug)",
       "console": "integratedTerminal"
     },
     {

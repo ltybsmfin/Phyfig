@@ -21,6 +21,19 @@
 
 ## 开发与验证
 
+编辑器入口统一走脚本，脚本内部就是对 checked-in 预设的增量构建：
+
+```powershell
+.\build-editor.ps1        # 只构建 physics_editor（Release；-DebugBuild 切 Debug）
+.\run-editor.ps1          # 增量编译后启动编辑器
+.\run-editor.ps1 -DebugBuild
+.\run-editor-mcp.ps1      # 增量编译后以 stdio 传输启动 Python MCP 服务
+```
+
+`run-editor.ps1`、`run-editor-mcp.ps1` 和 VS Code 的编辑器任务共用 `build-editor.ps1`：先 `cmake --preset vs2022` 配置，再按 `release`/`debug` 预设增量构建 `physics_editor`；cmake 退出码非 0 就停止，绝不启动旧的可执行文件。规范产物在 `build/vs2022/bin/editor/<配置>/`，评审或验证用的临时目录（如 `build/verify-runtime`）只是历史构建位置，不作为日常入口；历史实现留在 Git，产物不进 Git。
+
+完整构建与测试仍直接使用预设：
+
 ```powershell
 cmake --preset vs2022
 cmake --build --preset debug

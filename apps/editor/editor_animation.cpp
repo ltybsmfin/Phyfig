@@ -16,7 +16,8 @@ bool editNumber(const char* label,double& value) {
 void Editor::storeLayout() {
     workspace_.layout()={{"workspace",animationWorkspace_?"animation":"layout"},{"sidebarWidth",sidebarWidth_},
         {"bottomHeight",bottomHeight_},{"historyOpen",historyOpen_},{"grid",grid_},{"trails",trails_},{"followMcp",followMcp_},
-        {"scope",scope_},{"selected",selected_},{"channel",channel_},{"zoom",zoom_},{"pan",{pan_.x,pan_.y}}};
+        {"scope",scope_},{"selected",selected_},{"channel",channel_},{"zoom",zoom_},{"pan",{pan_.x,pan_.y}},
+        {"referenceZoom",referenceZoom_>0.f?referenceZoom_:zoom_}};
 }
 void Editor::applyLayout() {
     const auto& l=workspace_.layout();
@@ -26,6 +27,7 @@ void Editor::applyLayout() {
     switchScope(l.value("scope",std::string("scene"))=="component" && workspace_.hasComponent()?"component":"scene");
     selected_=l.value("selected",std::string());channel_=l.value("channel",std::string("x"));
     zoom_=std::clamp(l.value("zoom",35.f),8.f,1200.f);if(l.contains("pan")){pan_={l["pan"][0],l["pan"][1]};}
+    referenceZoom_=std::clamp(l.value("referenceZoom",zoom_),8.f,1200.f);
 }
 void Editor::projectDialog() {
     if(projectDialogOpen_){ImGui::OpenPopup("独立工程");projectDialogOpen_=false;}

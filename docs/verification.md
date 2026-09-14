@@ -1,4 +1,59 @@
-# 主干兼容修复验证 · 2026-09-09
+# 主干入口整理 · 2026-09-14
+
+- 正式目录 `build/vs2022/bin/editor/Release/physics_editor.exe` 已从当前源码重新构建；`editor_smoke`、`editor_mcp`、`editor_stdio` 3/3 通过，26.12 s，窗口验证 0 错误 / 0 警告。快照日志：`build/verification/2026-09-14-canonical-editor.log`。
+- `run-editor-mcp.ps1` 在 Windows PowerShell 5.1 和 PowerShell 7 下实际完成增量构建、MCP 初始化/工具发现、可见窗口与画布检查；日志分别为 `build/verification/powershell-editor-launcher.log` 与 `pwsh-editor-launcher.log`。MCP stdout 能由官方客户端严格解析，构建与诊断走 stderr。
+- 启动脚本构建失败时不启动旧程序，项目路径引号和退出码透传经隔离替身检查；脚本语法与 VS Code 任务 JSON 检查通过。普通窗口入口与 MCP 入口共用 `build-editor.ps1`。
+- 旧审查工作树与重复编辑器程序已清理。以下旧验收记录的临时程序路径是历史位置；CTest 的 `LastTest.log` 会被后续运行覆盖，正式入口与本次证据以上述快照为准。
+
+# v0.4 验收收尾 · 2026-09-14
+
+范围：完成编辑器缺陷修复的最终回归与专项验收，并复核先前 Debug 全量日志。Release 全量与两种配置的专项验收于 2026-09-14 执行；结果归档后仅调整文档，未重复构建。
+
+## 实测结果
+
+- **Debug 最终全量 19/19 通过**：`build/vs2022/Testing/Temporary/LastTest.log`（2026-09-10 16:04–16:06）逐项为 `Test Passed`，含 `platform_png_writer` 0.07 s、`platform_font_support` 0.04 s、`cube_math` 0.03 s、`cube_smoke` 1.51 s、`editor_project` 1.53 s、`editor_animation` 0.08 s、`editor_document` 0.10 s、`editor_components` 0.47 s、`editor_runtime_paths` 0.10 s、`editor_animation_smoke` 4.25 s、`editor_smoke` 2.54 s、`editor_component_smoke` 2.93 s、`editor_mcp` 8.64 s、`editor_stdio` 19.64 s、`editor_formula_worker` 8.21 s、`editor_runtime_assets` 26.95 s、`editor_background_job` 1.57 s、`kinematics_model` 0.03 s、`kinematics_smoke` 2.33 s。五个 smoke 用例（`cube_smoke`、`editor_animation_smoke`、`editor_smoke`、`editor_component_smoke`、`kinematics_smoke`）的日志均为 `Validation errors: 0; warnings: 0`。
+- **Release 全量 19/19 通过**：`ctest --test-dir build/verify-runtime -C Release --output-on-failure` 退出码 0，19/19，67.38 s（`build/verify-runtime/Testing/Temporary/LastTest.log`，2026-09-14 16:57–16:58），含 `editor_formula_worker` 8.49 s、`editor_stdio` 16.72 s、`editor_runtime_assets` 22.42 s、`editor_mcp` 7.62 s、`editor_background_job` 1.57 s；五个 smoke 的验证与同步计数同为 0 错误 0 警告。
+- **`mcp/test_defect_acceptance.py`（R1/R2/A2/A4/U4）**：Debug 与 Release 均退出码 0。R2 的离屏光栅在两种配置下都是请求 57.4206 px → 实际 58 px，2560 px PNG 存在且非单色，工作进程日志 `Validation errors: 0; warnings: 0`；U4 以 121 s × 30 fps = 3630 帧触发明确拒绝（错误信息含 `3600`、无输出文件、文档时长保持 121 s）。证据 `build/defect-acceptance/acceptance-2a472c9e9e7f44dbb25e984692bb7d50.log`（Debug）、`acceptance-35716ad5fae24287aff6be85e588c294.log`（Release），样张 `r2-frames-<uuid>/frame_000000.png`。
+- **U2 真实平移/缩放**：`editor_smoke` 在真实画布上注入滚轮缩放与中键拖动，`get_view_state` 的 `zoom`/`origin`/`pan` 确实变化，同时 `get_project.dirty` 仍为 false（`apps/editor/editor.cpp::smokeInput` / `smokeAfterFrame`）。`editor.cpp` 修改于 16:03:27、`physics_editor.exe` 构建于 16:03:42，均早于 16:04 开始的该轮测试，断言随 Debug 与 Release 的 `editor_smoke` 通过。
+- **U3 真实拖色一条历史并撤销**：`editor_smoke` 点击打开真实 `ColorEdit4` 弹窗，在弹窗内按住拖动三帧后松开，断言颜色已改变、文档 revision 只 +1、`history.lastId` 只 +1，随后 undo 恢复拖动前颜色；Debug 与 Release 的 `editor_smoke` 均通过。
+- **A1 / A3 / U5 的运行断言**：位于 `mcp/test_runtime_assets.py`（只读核对）——A1 断言 `canvasReady`、正画布尺寸、`viewportSource=presented` 与 `presented`/`view`（live）分离、`origin` 两分量、`zoom>0`；A3 断言 `fit` 使用请求尺寸的独立取景、`current` 匹配画布时宽高为偶数且 ≥16、`fit` 配 `width=height=0` 明确拒绝；U5 断言编码器缺失时导出失败但工作进程 `worker.log` 保留、编辑器进程仍存活，导出期间窗口缩放/最小化恢复继续，取消导出不退出前端。Debug 与 Release 的 `editor_runtime_assets` 均通过。
+- **U1 工作区夹取**：`placeWindowInWorkArea` 的 CPU 用例（`src/platform/font_support_test.cpp`，随 `platform_font_support` 通过）覆盖常规工作区、工作区小于期望尺寸、负坐标副屏与退化 1×1 工作区；本机窗口生命周期由 smoke 覆盖（日志 `Window: 1440x960 at 560,284 (work area 2560x1528, minimum 960x640)`）。这不构成完整逐显示器 DPI 矩阵。
+- **文案校正**：资源指纹的类型标签与长度标记只消除此前确定性的结构混淆（同为空容器、空串与 null 折叠成同一哈希输入），不承诺 FNV-1a 64 位绝无碰撞；早期 `editor_smoke` 失败原因是 JSON 空值初始化，不是空指针；A5 只描述当前实现下客户端需刷新/重连才能看到新增工具，不断言协议层无法推送工具列表变化。
+
+## 范围与限制
+
+- 仅本机 Windows 10.0.22631 / NVIDIA GeForce RTX 4060 Laptop GPU 与当前驱动；未验证其他 GPU/驱动与跨平台，不构成完整逐显示器 DPI 矩阵。
+- 最终 Release 全量命令由外部正式审批权限执行；本机沙箱内 shell 写 `build/` 受限，与产品行为无关。
+
+## 保留约束（本轮不变）
+
+- R3：超出 `referenceZoom` 的缩放仍是位图字形/公式遮罩放大，画面会变软，属已文档化的固有代价。
+- R4：组件实例 `scale` 不改变文字/公式字号与线宽。
+- R5：受限 LaTeX 不含 CJK，公式图元只放数学，中文与公式混排需拆成“文字图元 + 公式图元”。
+- U6：旧分支错误单摆资产（`pend_radial = F_T=mg\cos\theta`）未引入；若要重做，绳张力径向通式为 `T = mg cosθ + mv²/l`。
+- 旧导出分支不可整体合并（见 [分支审查](reviews/2026-09-09-branches.md)）。
+
+# v0.4 验证记录 · 2026-09-09
+
+范围：运行时数学 LaTeX（后台编译、工程内资产、撤销/冲突/保存重开/跨工程隔离）、整体统一缩放、独立固定尺寸 PNG/MP4/GIF 导出。
+
+- 构建：沿用 checked-in `vs2022` 生成器与 MSVC x64，没有替换工具链。Release 使用同生成器的独立目录 `build/verify-runtime`（`CMAKE_GENERATOR=Visual Studio 17 2022`、x64），避免重建并关闭用户正在使用的 `build/vs2022` Release 窗口；Debug 使用 `build/vs2022`。两者的 `PHYSICS_FORMULA_PYTHON` 指向装有 Pillow/pypdfium2 的解释器，该路径只写入本机 CMake 缓存，不提交。
+- Release 三项定向测试全部通过（最新日志 `build/verify-runtime/Testing/Temporary/LastTest.log`，2026-09-09 18:11）：
+  - `editor_mcp`：MCP 生命周期/编辑、原子性、历史来源与撤销关联、磁盘日志、实际呈现修订、自动恢复与可见渲染、正常 Vulkan 关闭；新增 `set_formula`/`export_animation`/`get_job`/`cancel_job` 工具发现与非法 LaTeX 拒绝。
+  - `editor_formula_worker`：`tools` 下 83 项受限公式排版与导出事务单元测试通过。
+  - `editor_runtime_assets`：运行期 LaTeX、拒绝/冲突/撤销、工程重开、PNG/MP4/GIF 独立尺寸与时长、父窗口缩放/最小化恢复期间继续导出、编码器缺失不退出前端、取消、组件草稿导出、跨工程资产隔离。
+- 导出证据（`build/verification/runtime-8bbc3c7f531d4a008c5323b19fcdb194`）：PNG 4 帧均 1280×720；MP4/GIF 320×180，MP4 时长 1.000s；`frames=ceil(时长×fps)=4` 且 `requestedDuration=1.0`，无静默缩短；组件草稿 PNG 320×180。每个原生导出进程的 `worker.log` 均为 `Validation errors: 0; warnings: 0`，且无 `[Vulkan]` 行。
+- 视觉检查：`build/verification/formula-fix-inspect/formulas-fixed.png`（分式、根式、上标、cases 完整）、`frames/frame_000000.png` 与 `frame_000003.png`（场景与公式完整、首末帧不同）、`component-frames/frame_000000.png`（固定尺寸）。这些截图与日志是本地产物，不进入 Git。
+- 资源隔离：`baseline.physproj` 含 28 个内置遮罩、无自定义；`portable.physproj` 含 28 个内置资产和 1 个自定义资产（带 LaTeX 源文本）。重开 portable 后公式仍可用；再打开 baseline 后不再包含上一个工程的自定义资产。
+- Debug 最终补测（`build/vs2022`，2026-09-09 23:19）：三项定向测试 3/3 通过，合计 35.71s，日志 `build/vs2022/Testing/Temporary/LastTest.log`。本轮由 Codex 经正式 `require_escalated` 审批执行（获批的正式运行，非绕过沙箱）；测试使用独立 pipe，未连接、未关闭用户正在使用的 `build/vs2022` Release 窗口。
+  - `editor_mcp`（8.29s）：MCP 生命周期/编辑、原子性、历史来源与撤销关联、磁盘日志、实际呈现修订、自动恢复与可见渲染、正常 Vulkan 关闭。
+  - `editor_formula_worker`（7.03s）：`tools` 下 83 项受限公式排版与导出事务单元测试（`Ran 83 tests`，`OK`）。
+  - `editor_runtime_assets`（20.39s）：运行期 LaTeX、拒绝/冲突/撤销、工程保存后重开、PNG/MP4/GIF 时长与尺寸、缩放/最小化恢复期间继续导出、编码器缺失不退出前端、取消、组件草稿导出、跨工程资产隔离。
+  - 该轮产物 `build/verification/runtime-b51ed867b6fe4f42b94adbad9e052418`：两个原生导出进程的 `runtime-*.log` 均为 `Validation errors: 0; warnings: 0`，`swapchain builds: 3`、`minimized skips: 0`，覆盖窗口缩放、最小化/恢复与正常关闭。
+  - 范围与限制：仅本机 Windows / NVIDIA RTX 4060 Laptop GPU；Release 三项已于 18:11 覆盖同一份源码与最终脚本，本轮未重复。
+- 范围与限制：仅本机 Windows / NVIDIA GPU；未验证其他 GPU/驱动、超长动画、矢量导出或跨会话自动恢复。4096×4096 导出的 PNG 编码峰值约 0.5 GB，属已知资源成本（未做压测，无失败证据）。
+
+## 主干兼容修复验证 · 2026-09-09
 
 - `editor_project`：Debug / Release 均通过，新增检查库的增量兼容、变化遮罩拒绝、保留新资源、非法缩放基准拒绝且工作区不变。
 - Debug `physics_editor` 构建成功，`editor_mcp` 接口回归通过；原生测试进程正常关闭，Vulkan 错误与警告均为 0。
