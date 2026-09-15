@@ -1,5 +1,6 @@
 #pragma once
 #include "document.hpp"
+#include <cstdint>
 #include <memory>
 
 namespace physics_editor {
@@ -21,6 +22,9 @@ public:
     // writer goes through setResources(), which invalidates the fingerprint.
     const Json& resources() const { return *resources_; }
     void setResources(Json resources);
+    // Bumped on every whole-resource commit. Derived caches (the Write entry mask
+    // geometry) key on it instead of hashing the mask payload every frame.
+    uint64_t resourceGeneration() const { return resourceGeneration_; }
     Json projectInfo() const;
     bool projectDirty() const;
 private:
@@ -32,6 +36,7 @@ private:
     unsigned draftNumber_=0;
     Json closedDrafts_=Json::array(),layout_=Json::object();
     std::shared_ptr<Json> resources_=std::make_shared<Json>(Json::object());
+    uint64_t resourceGeneration_=0;
     Json savedToken_, projectEvents_=Json::array();
     std::string projectPath_;
     mutable std::string resourceFingerprint_;

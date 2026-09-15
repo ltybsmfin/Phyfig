@@ -249,6 +249,48 @@ void testWindowPlacement() {
     }
 }
 
+void testGlyphRaster() {
+    // rasterizeText() feeds the Write entry outline tracer: it must reproduce the
+    // pen movement of ImDrawList::AddText and must survive characters no installed
+    // font covers (an all-missing atlas used to trip ImGui's glyph assertion).
+    const auto candidates = graphics::font_support::loadSystemFontCandidates();
+    if (candidates.empty()) {
+        std::cerr << "[font_support] no system font found; skipping the glyph raster checks\n";
+        return;
+    }
+    const auto glyphs = graphics::font_support::rasterizeText("A b", 32.0f, candidates);
+    CHECK(glyphs.size() == 3);
+    CHECK(glyphs.size() == 3 && glyphs[0].hasBitmap && glyphs[0].width > 0 && glyphs[0].height > 0);
+    CHECK(glyphs.size() == 3 && glyphs[0].offset == 0 && glyphs[0].bytes == 1);
+    // The traced outline lives in bitmap pixels, so the bitmap rectangle must
+    // match the logical extent ImGui draws for the same glyph.
+    for (const auto& glyph : glyphs) {
+        if (!glyph.hasBitmap) continue;
+        CHECK(std::abs(glyph.extentX - static_cast<float>(glyph.width)) <= 0.01f);
+        CHECK(std::abs(glyph.extentY - static_cast<float>(glyph.height)) <= 0.01f);
+    }
+    CHECK(glyphs.size() == 3 && !glyphs[1].hasBitmap);           // the space carries no ink
+    CHECK(glyphs.size() == 3 && glyphs[1].penX > glyphs[0].penX);
+    CHECK(glyphs.size() == 3 && glyphs[2].penX > glyphs[1].penX);
+
+    const auto lines = graphics::font_support::rasterizeText("A\nB", 32.0f, candidates);
+    CHECK(lines.size() == 3);
+    CHECK(lines.size() == 3 && lines[2].penX < lines[1].penX);   // a newline returns to the origin
+    CHECK(lines.size() == 3 && lines[2].penY > lines[1].penY);
+
+    const auto cjk = graphics::font_support::rasterizeText("\xE4\xB8\xAD\xE6\x96\x87", 32.0f, candidates);
+    CHECK(cjk.size() == 2);
+    CHECK(cjk.size() == 2 && cjk[0].hasBitmap && cjk[1].hasBitmap);
+    CHECK(cjk.size() == 2 && cjk[1].penX > cjk[0].penX);
+
+    // A code point no source contains must resolve to the atlas fallback instead
+    // of building an empty font.
+    const auto unknown = graphics::font_support::rasterizeText("\xF0\x9F\x98\x80", 32.0f, candidates);
+    CHECK(unknown.size() == 1);
+    const auto missing = graphics::font_support::missingGlyphsForText("\xF0\x9F\x98\x80");
+    CHECK(listContains(missing, 0x1F600u));
+}
+
 } // namespace
 
 int main() {
@@ -259,6 +301,7 @@ int main() {
     testRasterClamp();
     testAtlasWidth();
     testWindowPlacement();
+    testGlyphRaster();
     if (failures == 0) {
         std::cerr << "font_support_test: all checks passed\n";
         return 0;

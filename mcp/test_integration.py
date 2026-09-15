@@ -180,6 +180,24 @@ async def verify(executable: Path):
                     anim = {"channels": {"x": {"kind": "formula", "segments": [{"start": 0, "end": reopened["document"]["duration"], "expression": "t^2"}]}}}
                     await call("apply_commands", {"expected_revision": reopened["revision"], "commands": [{"op": "create", "id": "animated", "type": "point", "animation": anim}]})
                     assert (await call("sample_animation", {"id": "animated", "time": 0.5}))["state"]["x"] == 0.25
+                    # Write entry (handwriting): the UI and MCP share the same
+                    # document command, and a rejected edit must not change the
+                    # document. The live window renders the entry while it runs.
+                    current = await call("get_scene")
+                    await call("apply_commands", {"expected_revision": current["revision"], "commands": [
+                        {"op": "create", "id": "handwritten", "type": "text", "name": "手写入场",
+                         "properties": {"x": -2.0, "y": 2.0, "text": "手写入场", "size": 22.0},
+                         "write": {"start": 0.0, "duration": 1.5}}]})
+                    written = await call("get_scene")
+                    handwritten = next(o for o in written["document"]["objects"] if o["id"] == "handwritten")
+                    assert handwritten["write"]["duration"] == 1.5, handwritten
+                    await call("apply_commands", {"expected_revision": written["revision"], "commands": [
+                        {"op": "set_write", "id": "animated", "write": {"start": 0.0, "duration": 1.0}}]}, error=True)
+                    assert await call("get_scene") == written
+                    respecified = await call("apply_commands", {"expected_revision": written["revision"], "commands": [
+                        {"op": "set_write", "id": "handwritten", "write": {"start": 0.2, "duration": 2.5, "stagger": 0.4}}]})
+                    handwritten = next(o for o in respecified["document"]["objects"] if o["id"] == "handwritten")
+                    assert handwritten["write"]["start"] == 0.2 and handwritten["write"]["duration"] == 2.5, handwritten
                     project = await call("get_project")
                     await call("save_project", {"path": "build/mcp-project.physproj", "expected_token": project["token"], "overwrite": True})
                     # Request normal close so validation includes resource destruction.

@@ -15,6 +15,7 @@ Workspace::Workspace():scene_(std::make_unique<Document>()),savedScene_(scene_->
 void Workspace::setResources(Json resources) {
     *resources_=std::move(resources);
     resourceFingerprintValid_=false;
+    ++resourceGeneration_;
 }
 void Workspace::validateFormulas(){
     if(checkFormulas_)return;

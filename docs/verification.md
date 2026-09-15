@@ -1,3 +1,23 @@
+# Write 手写入场验收 · 2026-09-15
+
+范围：文字和 LaTeX 公式的轮廓描画、填充、纯时间求值，编辑器/MCP 共用 `set_write` 操作，历史与工程保存兼容。实现与示例位于主干。
+
+## 实测结果
+
+- `cmake --build --preset release` 完成；`ctest --test-dir build/vs2022 -C Release --output-on-failure` **21/21 通过**，69.49 s。包含文档/组件/历史、公式资源、MCP/stdio、导出和实际窗口检查。完整快照：`build/verification/2026-09-15-write-release.log`。
+- Debug 编辑器及 `physics_write_entry_test` 编译成功；Debug 的 `editor_smoke`、`editor_write_rendering`、`editor_write_entry` **3/3 通过**，8.15 s。没有将本次结果表述为 Debug 全量测试。快照：`build/verification/2026-09-15-write-debug.log`。
+- 新增 `editor_write_rendering` 使用独立 stdio 编辑器，检查前后 seek 在可见窗口实际呈现、不改变文档修订，并导出四帧。比较 t=0.1（write.duration=0.100001）与 t=0.15 的最终普通绘制：Release 与 Debug 的最大 8 位颜色通道差均为 **2**，3097 个通道有差异；允许的最大差为 2，不使用大面积误差比例掩盖字距跳动。中文区域逐像素一致，剩余为公式纹理插值量化。两个结果目录：`build/verification/write-render-e7a66e11d76a49db9c200300abdb43d0`（Release）、`build/verification/write-render-34ee647673f24fc6ab2e082fabc1d40a`（Debug）。
+- 首版曾在同一检查中出现 max delta 172，第一轮修正后为 68；最终补齐纹理过滤支持区域后降为 2。该回归能检测实际观察到的缺陷，不只验证最终帧。
+- 最终示例已导出 48 张 1280×720 PNG；人工检查 1.0 / 2.5 / 3.5 / 5.875 s 帧，确认中文逐字描边位置、公式入场过程和最终排版。帧目录：`build/verification/write-acceptance/frames-1789447019794539700`。临时帧检查脚本在导出后曾漏传保存用 expectedToken；正式回归与下面的演示工程保存均使用 token 并通过。
+- 编辑器实际导出 **6 s、30 fps、1280×720、180 帧 MP4**，路径：`build/verification/write-demo/write-demo-1789447020930247600.mp4`；配套工程 `build/verification/write-demo/write-demo.physproj`。导出任务详情保存在该目录的 `result.json`。
+- 实际窗口、同步校验及导出子进程的 Vulkan 验证均为 **0 错误、0 警告**。窗口冒烟检查覆盖缩放、最小化/恢复、关闭；图像回归的主窗口在保存后正常关闭（退出码 0）。
+
+## 实现与取舍
+
+文字轮廓由固定 64 px 光栅提取，再映射至当前字体的真实包围盒与字距；填充复用原图集。公式将所有有覆盖的 texel 及其一圈双线性过滤支持邻域独占分配给各区域，用原 alpha 纹理绘制，保留软边缘与孔洞；弱灰度区域不会丢失。CPU 回归检查非零位置偏移、断开的轮廓、过滤支持域、弱笔画、孔洞、时间边界和序列化。
+
+该效果接近 Manim Write 的轮廓描画方式，不是汉字真实笔顺。公式按遮罩区域的空间顺序出现，不解析 LaTeX 的逻辑推导顺序。只有弱灰度且未达到描边阈值的区域保留填充、没有轮廓描边；组件定义仍为静态图元。高倍率放大仍受光栅精度限制。
+
 # 主干入口整理 · 2026-09-14
 
 - 正式目录 `build/vs2022/bin/editor/Release/physics_editor.exe` 已从当前源码重新构建；`editor_smoke`、`editor_mcp`、`editor_stdio` 3/3 通过，26.12 s，窗口验证 0 错误 / 0 警告。快照日志：`build/verification/2026-09-14-canonical-editor.log`。

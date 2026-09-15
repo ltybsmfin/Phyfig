@@ -1,6 +1,7 @@
 #include "document.hpp"
 #include "component.hpp"
 #include "animation.hpp"
+#include "write_entry.hpp"
 #include <windows.h>
 #include <algorithm>
 #include <cmath>
@@ -89,12 +90,12 @@ Json Registry::describe() const {
 }
 
 Document::Document(Registry registry,Json initial):registry_(std::move(registry)),scene_(initial.is_null()?demo():std::move(initial)) {
-    registerCommand("create","Create a primitive; id must be unique",[this](Json& s,const Json& a) {
+    registerCommand("create","Create a primitive; id must be unique; motion/binding/animation/write may be attached",[this](Json& s,const Json& a) {
         const auto type=a.at("type").get<std::string>(); Json properties=registry_.get(type).defaults;
         if(a.contains("properties")) properties.update(a.at("properties"));
         Json o={{"id",a.at("id")},{"type",type},{"name",a.value("name",a.at("id").get<std::string>())},
             {"visible",true},{"locked",false},{"step",0},{"properties",properties}};
-        for(const char* field:{"motion","binding","animation","step","visible","locked"}) if(a.contains(field)) o[field]=a[field];
+        for(const char* field:{"motion","binding","animation","write","step","visible","locked"}) if(a.contains(field)) o[field]=a[field];
         s["objects"].push_back(std::move(o));
     });
     registerCommand("update","Merge object fields and properties; null removes optional motion/binding",[](Json& s,const Json& a) {
@@ -129,6 +130,11 @@ Document::Document(Registry registry,Json initial):registry_(std::move(registry)
     });
     registerCommand("set_animation","Set authored animation or remove it with null",[](Json& s,const Json& a){
         auto& o=find(s,a.at("id"));if(a.at("animation").is_null())o.erase("animation");else o["animation"]=a["animation"];
+    });
+    registerCommand("set_write","Set the Write-style entry animation on a text/formula object; null removes it",[](Json& s,const Json& a){
+        auto& o=find(s,a.at("id"));const std::string type=o.at("type").get<std::string>();
+        require(type=="text" || type=="formula","Write entry is only supported on text/formula objects");
+        if(a.at("write").is_null())o.erase("write");else o["write"]=a["write"];
     });
     registerCommand("set_keyframe","Insert/update one keyframe in an existing key channel",[](Json& s,const Json& a){
         auto& channel=find(s,a.at("id")).at("animation").at("channels").at(a.at("channel").get<std::string>());
@@ -167,6 +173,7 @@ void Document::validate(const Json& s) const {
         require(o.at("step").is_number_integer() && o.at("step")>=0 && o.at("step")<s.at("steps"),"object reveal step outside scene steps");
         registry_.get(o.at("type")).validate(o.at("properties"));
         animation::validate(o,s["duration"],registry_);
+        write_entry::validate(o,s.at("duration").get<double>());
         if(o.contains("motion")) { const auto& m=o.at("motion"); for(auto key:{"vx","vy","ax","ay"}) number(m,key); }
         if(o.contains("binding")) {
             require(!o.contains("motion"),"A bound object cannot have its own motion");
@@ -230,7 +237,11 @@ Json Document::catalog() const {
     return {{"documentVersion",1},{"primitives",registry_.describe()},{"commands",commands},
         {"coordinates","meters; +x right, +y up; motion uses seconds; screen text size uses pixels"},
         {"motion",{{"vx",0},{"vy",15},{"ax",0},{"ay",-9.8}}},
-        {"binding",{{"target","object-id"},{"kind","position or velocity"},{"scale",0.25}}}};
+        {"binding",{{"target","object-id"},{"kind","position or velocity"},{"scale",0.25}}},
+        {"write",{{"appliesTo","text/formula objects"},
+            {"default",{{"start",0.0},{"duration",1.5},{"stagger",0.35},{"phase",0.65},
+                {"outlineWidth",1.5},{"outline",true},{"fill",true},{"easing","smooth"}}},
+            {"note","Write entry: outlines are drawn progressively along the real coverage contours, then the fill fades in. phase must stay below 1 so the fill has time left; the outline is traced from the coverage mask, not from font vector paths, so CJK stroke order is not reproduced."}}}};
 }
 void Document::startJournal(const std::string& directory) {
     require(journalPath_.empty(),"Journal is already open");

@@ -48,6 +48,7 @@ def get_catalog(scope: str = "scene") -> dict[str, Any]:
         "component_settings": {"patch": "merge patch for componentDefinition metadata; component scope only"},
         "settings": {"title": "optional", "duration": "seconds in (0,3600]", "steps": "integer in [1,100]"},
         "set_animation": {"id": "object id", "animation": "parameters, quantities, channels; null removes animation"},
+        "set_write": {"id": "text/formula object id", "write": "start, duration (seconds, inside the scene), stagger, phase (<1), outlineWidth, outline, fill, easing; null removes the entry"},
         "set_keyframe": {"id": "object id", "channel": "existing key channel", "time": "seconds", "value": "numeric", "interpolation": "linear | step | smooth"},
         "delete_keyframe": {"id": "object id", "channel": "key channel", "time": "existing key time"},
     }

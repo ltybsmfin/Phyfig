@@ -105,7 +105,7 @@ void validateDefinition(const Json& definition,const Registry& registry) {
         require(o.at("type")!="component","Nested component instances require a future format version");
         require(!o.contains("motion") && !o.contains("binding"),"Definition children are static local geometry; apply motion to the instance");
     }
-    for(const auto& o:definition.at("objects")) require(!o.contains("animation"),"Animate a scene instance rather than static definition children");
+    for(const auto& o:definition.at("objects")) require(!o.contains("animation") && !o.contains("write"),"Animate a scene instance rather than static definition children");
     for(const auto& o:materialize(definition)) registry.get(o.at("type")).validate(o.at("properties"));
 }
 Json instantiate(const Json& scene,const Json& instance,State position) {

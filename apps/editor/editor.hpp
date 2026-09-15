@@ -81,6 +81,7 @@ private:
     Json exportSnapshot_;
     Json jobRequest(const Json&,const std::string&);
     void formulaPanel(const Json& object);
+    void writePanel(const Json& object);
     void jobsPanel();
     void exportDialog();
     void syncFormulaResources();

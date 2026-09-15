@@ -1,8 +1,8 @@
-add_library(physics_document STATIC "${PROJECT_SOURCE_DIR}/src/editor/document.cpp" "${PROJECT_SOURCE_DIR}/src/editor/component.cpp" "${PROJECT_SOURCE_DIR}/src/editor/workspace.cpp" "${PROJECT_SOURCE_DIR}/src/editor/expression.cpp" "${PROJECT_SOURCE_DIR}/src/editor/animation.cpp" "${PROJECT_SOURCE_DIR}/src/editor/archive.cpp" "${PROJECT_SOURCE_DIR}/src/editor/project.cpp")
+add_library(physics_document STATIC "${PROJECT_SOURCE_DIR}/src/editor/document.cpp" "${PROJECT_SOURCE_DIR}/src/editor/component.cpp" "${PROJECT_SOURCE_DIR}/src/editor/workspace.cpp" "${PROJECT_SOURCE_DIR}/src/editor/expression.cpp" "${PROJECT_SOURCE_DIR}/src/editor/animation.cpp" "${PROJECT_SOURCE_DIR}/src/editor/write_entry.cpp" "${PROJECT_SOURCE_DIR}/src/editor/archive.cpp" "${PROJECT_SOURCE_DIR}/src/editor/project.cpp")
 target_include_directories(physics_document PUBLIC "${PROJECT_SOURCE_DIR}/src/editor" "${PROJECT_SOURCE_DIR}/third_party/json")
 target_compile_features(physics_document PUBLIC cxx_std_17)
 target_compile_definitions(physics_document PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-add_executable(physics_editor main.cpp editor.cpp editor_components.cpp editor_animation.cpp editor_jobs.cpp "${PROJECT_SOURCE_DIR}/src/editor/pipe.cpp" "${PROJECT_SOURCE_DIR}/src/editor/stdio_transport.cpp")
+add_executable(physics_editor main.cpp editor.cpp editor_components.cpp editor_animation.cpp editor_jobs.cpp editor_write.cpp "${PROJECT_SOURCE_DIR}/src/editor/pipe.cpp" "${PROJECT_SOURCE_DIR}/src/editor/stdio_transport.cpp")
 target_link_libraries(physics_editor PRIVATE physics_document physics_vulkan_host advapi32)
 target_compile_definitions(physics_editor PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 set_target_properties(physics_editor PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/editor" VS_DEBUGGER_WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
@@ -56,6 +56,8 @@ if(BUILD_TESTING)
         set_tests_properties(editor_mcp PROPERTIES TIMEOUT 60 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
         add_test(NAME editor_stdio COMMAND "${PHYSICS_MCP_PYTHON}" "${PROJECT_SOURCE_DIR}/mcp/test_stdio.py" "$<TARGET_FILE:physics_editor>")
         set_tests_properties(editor_stdio PROPERTIES TIMEOUT 120 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+        add_test(NAME editor_write_rendering COMMAND "${PHYSICS_MCP_PYTHON}" "${PROJECT_SOURCE_DIR}/mcp/test_write_rendering.py" "$<TARGET_FILE:physics_editor>")
+        set_tests_properties(editor_write_rendering PROPERTIES TIMEOUT 150 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
     endif()
     set(PHYSICS_FORMULA_PYTHON "" CACHE FILEPATH "Python with Pillow and pypdfium2 for runtime formula integration tests")
     if(PHYSICS_FORMULA_PYTHON)
@@ -73,4 +75,22 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME editor_background_job COMMAND physics_background_job_test)
     set_tests_properties(editor_background_job PROPERTIES TIMEOUT 60)
+    # Write entry: pure CPU outline/timing tests plus the CJK chain through the
+    # real system font. The ImGui sources are compiled in directly (like
+    # platform_font_support) so the test never needs a GPU, window or Vulkan
+    # device; WORKING_DIRECTORY is the source tree because the test also checks
+    # that the checked-in scenes/write-entry.json matches the generated scene.
+    set(write_entry_imgui_dir "${PROJECT_SOURCE_DIR}/third_party/imgui")
+    add_executable(physics_write_entry_test "${PROJECT_SOURCE_DIR}/src/editor/write_entry_test.cpp"
+        "${write_entry_imgui_dir}/imgui.cpp" "${write_entry_imgui_dir}/imgui_draw.cpp"
+        "${write_entry_imgui_dir}/imgui_tables.cpp" "${write_entry_imgui_dir}/imgui_widgets.cpp")
+    target_link_libraries(physics_write_entry_test PRIVATE physics_document)
+    target_include_directories(physics_write_entry_test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/platform" "${PROJECT_SOURCE_DIR}/src/math" "${PROJECT_SOURCE_DIR}/assets" "${write_entry_imgui_dir}")
+    target_compile_definitions(physics_write_entry_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    if(MSVC)
+        set_property(SOURCE "${PROJECT_SOURCE_DIR}/src/editor/write_entry_test.cpp" PROPERTY COMPILE_OPTIONS /W4 /permissive- /utf-8)
+    endif()
+    add_test(NAME editor_write_entry COMMAND physics_write_entry_test)
+    set_tests_properties(editor_write_entry PROPERTIES TIMEOUT 120 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 endif()

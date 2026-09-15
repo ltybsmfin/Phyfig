@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "title": "Write 手写入场（中文 + 公式）",
+  "duration": 6.0,
+  "steps": 1,
+  "objects": [
+    {
+      "id": "title",
+      "type": "text",
+      "name": "手写标题",
+      "properties": {
+        "x": -6.0,
+        "y": 5.4,
+        "stroke": 2.0,
+        "color": [0.12, 0.22, 0.32, 1.0],
+        "text": "手写入场动画",
+        "size": 56
+      },
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "write": {"start": 0.0, "duration": 2.2, "stagger": 0.5, "phase": 0.7}
+    },
+    {
+      "id": "note",
+      "type": "text",
+      "name": "中文说明",
+      "properties": {
+        "x": -6.0,
+        "y": 2.8,
+        "stroke": 2.0,
+        "color": [0.12, 0.22, 0.32, 1.0],
+        "text": "沿字形轮廓逐步描绘，再填充",
+        "size": 36
+      },
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "write": {"start": 0.8, "duration": 3.2, "stagger": 0.45, "phase": 0.65}
+    },
+    {
+      "id": "flight",
+      "type": "formula",
+      "name": "飞行时间",
+      "properties": {
+        "x": -6.0,
+        "y": -0.2,
+        "stroke": 2.0,
+        "color": [0.12, 0.22, 0.32, 1.0],
+        "formula": "flight",
+        "scale": 2.0
+      },
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "write": {"start": 1.8, "duration": 2.6, "stagger": 0.5, "phase": 0.6}
+    },
+    {
+      "id": "position",
+      "type": "formula",
+      "name": "位置公式",
+      "properties": {
+        "x": -6.0,
+        "y": -3.4,
+        "stroke": 2.0,
+        "color": [0.12, 0.22, 0.32, 1.0],
+        "formula": "position_y",
+        "scale": 2.0
+      },
+      "visible": true,
+      "locked": false,
+      "step": 0,
+      "write": {"start": 3.2, "duration": 2.6, "stagger": 0.5, "phase": 0.6}
+    }
+  ]
+}

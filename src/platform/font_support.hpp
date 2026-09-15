@@ -361,7 +361,14 @@ inline std::vector<uint32_t> probeCoverage(const std::vector<const FontSource*>&
                                            const std::vector<uint32_t>& codepoints, float basePx) {
     std::vector<uint32_t> covered;
     if (codepoints.empty()) return covered;
-    const std::vector<ImWchar> ranges = rangesFromCodepoints(codepoints);
+    // The probe ranges always include ASCII: a source that contains none of the
+    // requested code points would otherwise pack no glyph at all, and ImGui
+    // asserts on a font without glyphs instead of reporting empty coverage. The
+    // extra characters are never reported back.
+    std::vector<uint32_t> probeRanges = codepoints;
+    probeRanges.reserve(codepoints.size() + 96);
+    for (uint32_t codepoint = 0x20; codepoint <= 0x7E; ++codepoint) probeRanges.push_back(codepoint);
+    const std::vector<ImWchar> ranges = rangesFromCodepoints(probeRanges);
     ImFontAtlas atlas;
     atlas.Flags |= ImFontAtlasFlags_NoMouseCursors | ImFontAtlasFlags_NoBakedLines;
     atlas.TexDesiredWidth = 2048;
@@ -439,6 +446,199 @@ inline std::vector<uint32_t> missingGlyphsForText(std::string_view text, float b
     const auto needed = textCodepoints(text);
     if (candidates.empty()) return needed;
     return planCoverage(candidates, needed, basePx).missing;
+}
+
+// Decodes UTF-8 like decodeUtf8(), but also reports where each character starts
+// inside the source text, so callers can address a single character of the
+// original string (ImDrawList::AddText text ranges).
+struct DecodedCharacter {
+    uint32_t codepoint;
+    std::size_t offset;
+    std::size_t bytes;
+};
+
+inline std::vector<DecodedCharacter> decodeUtf8Characters(std::string_view text) {
+    std::vector<DecodedCharacter> out;
+    out.reserve(text.size());
+    const auto* bytes = reinterpret_cast<const unsigned char*>(text.data());
+    const std::size_t size = text.size();
+    std::size_t i = 0;
+    while (i < size) {
+        const std::size_t begin = i;
+        const unsigned char lead = bytes[i];
+        uint32_t codepoint = 0;
+        std::size_t extra = 0;
+        if (lead < 0x80) {
+            codepoint = lead;
+        } else if ((lead & 0xE0) == 0xC0) {
+            codepoint = lead & 0x1Fu; extra = 1;
+        } else if ((lead & 0xF0) == 0xE0) {
+            codepoint = lead & 0x0Fu; extra = 2;
+        } else if ((lead & 0xF8) == 0xF0) {
+            codepoint = lead & 0x07u; extra = 3;
+        } else {
+            out.push_back({0xFFFD, begin, 1});
+            ++i;
+            continue;
+        }
+        if (i + extra >= size) {
+            out.push_back({0xFFFD, begin, 1});
+            ++i;
+            continue;
+        }
+        bool valid = true;
+        for (std::size_t k = 1; k <= extra; ++k) {
+            const unsigned char next = bytes[i + k];
+            if ((next & 0xC0) != 0x80) { valid = false; break; }
+            codepoint = (codepoint << 6) | (next & 0x3Fu);
+        }
+        if (!valid) {
+            out.push_back({0xFFFD, begin, 1});
+            ++i;
+            continue;
+        }
+        static const uint32_t minimum[] = {0, 0x80, 0x800, 0x10000};
+        const bool surrogate = codepoint >= 0xD800 && codepoint <= 0xDFFF;
+        if (codepoint < minimum[extra] || codepoint > 0x10FFFF || surrogate) {
+            out.push_back({0xFFFD, begin, extra + 1});
+            i += extra + 1;
+            continue;
+        }
+        out.push_back({codepoint, begin, extra + 1});
+        i += extra + 1;
+    }
+    return out;
+}
+
+// Loads the system font candidates once per process. The helper above reads the
+// font files from disk, so callers that rasterize repeatedly must not call it per
+// object.
+inline const std::vector<FontSource>& systemFontCandidates() {
+    static const std::vector<FontSource> candidates = loadSystemFontCandidates();
+    return candidates;
+}
+
+// One rasterized character for the Write entry animation. `penX/penY` is the pen
+// position this character starts at, `x/y` is the bitmap's top-left offset from
+// that pen position: both are in logical pixels at the requested raster size and
+// match what ImFont::RenderText() uses when the same string is drawn with
+// ImDrawList::AddText at that size. `offset/bytes` address the character inside
+// the source UTF-8 text.
+struct GlyphRaster {
+    uint32_t codepoint = 0;
+    std::size_t offset = 0, bytes = 0;
+    float penX = 0.0f, penY = 0.0f;
+    float x = 0.0f, y = 0.0f;
+    int width = 0, height = 0;
+    // Logical extent ImGui places on screen (X1-X0, Y1-Y0). The traced outline is
+    // expressed in [0,width] x [0,height] bitmap pixels, so the two only agree
+    // while the atlas is built without oversampling or rasterizer density — the
+    // assertion the Write entry tests pin down.
+    float extentX = 0.0f, extentY = 0.0f;
+    bool hasBitmap = false;
+    std::vector<unsigned char> alpha;
+};
+
+// Rasterizes `text` on the CPU with the same system fonts and the same
+// left-to-right, top-to-bottom pen movement ImGui uses. One entry per decoded
+// character, including characters without ink (spaces, newlines), so a caller
+// can keep one animation step per character. Newline handling mirrors
+// RenderText(): x returns to the line origin, y advances by the raster size.
+inline std::vector<GlyphRaster> rasterizeText(std::string_view text, float pixelSize,
+                                              const std::vector<FontSource>& candidates) {
+    std::vector<GlyphRaster> result;
+    if (!(pixelSize >= kMinRasterPixelSize) || candidates.empty()) return result;
+    const auto decoded = decodeUtf8Characters(text);
+    if (decoded.empty()) return result;
+    // ASCII is always requested: it anchors the atlas so a text no font can draw
+    // still produces a font with glyphs instead of an empty one, and the filled
+    // characters keep their place in the layout below.
+    std::vector<uint32_t> needed;
+    needed.reserve(decoded.size() + 96);
+    for (uint32_t codepoint = 0x20; codepoint <= 0x7E; ++codepoint) needed.push_back(codepoint);
+    for (const auto& character : decoded) needed.push_back(character.codepoint);
+    const std::vector<ImWchar> ranges = rangesFromCodepoints(needed);
+    if (ranges.size() <= 1) return result;
+    ImFontAtlas atlas;
+    atlas.Flags |= ImFontAtlasFlags_NoMouseCursors | ImFontAtlasFlags_NoBakedLines;
+    atlas.TexDesiredWidth = 4096;
+    auto addSource = [&](const FontSource& source, bool merge, const std::vector<ImWchar>& glyphRanges) {
+        if (source.bytes.size() < 100) return false;
+        ImFontConfig config;
+        config.MergeMode = merge;
+        config.FontNo = source.fontNo;
+        config.FontDataOwnedByAtlas = false; // the cached bytes outlive this atlas
+        // Oversampling would make the packed rectangle wider than the logical
+        // glyph extent, which the outline extraction below relies on.
+        config.OversampleH = 1;
+        config.OversampleV = 1;
+        return atlas.AddFontFromMemoryTTF(const_cast<unsigned char*>(source.bytes.data()),
+                   static_cast<int>(source.bytes.size()), pixelSize, &config, glyphRanges.data()) != nullptr;
+    };
+    // Every candidate is merged with the same range set. ImGui never lets a later
+    // merged source overwrite a glyph an earlier one provided, so the primary font
+    // wins and the fallbacks fill in only what it lacks — the same result as the
+    // host's per-codepoint fallback plan, but without probing a source that may
+    // contain none of the requested characters (an all-missing source contributes
+    // no glyph and ImGui asserts on an empty font).
+    if (!addSource(candidates[0], false, ranges)) return result;
+    for (std::size_t i = 1; i < candidates.size(); ++i) addSource(candidates[i], true, ranges);
+    if (!atlas.Build() || atlas.Fonts.Size == 0) return result;
+    unsigned char* pixels = nullptr;
+    int texWidth = 0, texHeight = 0;
+    atlas.GetTexDataAsAlpha8(&pixels, &texWidth, &texHeight);
+    if (pixels == nullptr || texWidth <= 0 || texHeight <= 0) return result;
+    ImFont* font = atlas.Fonts[0];
+    result.reserve(decoded.size());
+    float penX = 0.0f, penY = 0.0f;
+    for (const auto& character : decoded) {
+        GlyphRaster glyph;
+        glyph.codepoint = character.codepoint;
+        glyph.offset = character.offset;
+        glyph.bytes = character.bytes;
+        glyph.penX = penX;
+        glyph.penY = penY;
+        if (character.codepoint == '\n') {
+            penX = 0.0f;
+            penY += pixelSize;
+            result.push_back(std::move(glyph));
+            continue;
+        }
+        if (character.codepoint == '\r') { // RenderText() skips the carriage return
+            result.push_back(std::move(glyph));
+            continue;
+        }
+        // Truncating to ImWchar mirrors ImFont::RenderText(): a code point above
+        // the 16-bit atlas range falls back to the same replacement glyph the
+        // drawn text uses, so the traced outline and the drawn glyph agree.
+        const ImWchar lookup = static_cast<ImWchar>(character.codepoint);
+        const ImFontGlyph* packed = font->FindGlyph(lookup);
+        if (packed != nullptr) {
+            if (packed->Visible) {
+                const int x0 = static_cast<int>(std::lround(packed->U0 * static_cast<float>(texWidth)));
+                const int y0 = static_cast<int>(std::lround(packed->V0 * static_cast<float>(texHeight)));
+                const int x1 = static_cast<int>(std::lround(packed->U1 * static_cast<float>(texWidth)));
+                const int y1 = static_cast<int>(std::lround(packed->V1 * static_cast<float>(texHeight)));
+                const int width = x1 - x0, height = y1 - y0;
+                if (width > 0 && height > 0 && x0 >= 0 && y0 >= 0 && x1 <= texWidth && y1 <= texHeight) {
+                    glyph.x = packed->X0;
+                    glyph.y = packed->Y0;
+                    glyph.extentX = packed->X1 - packed->X0;
+                    glyph.extentY = packed->Y1 - packed->Y0;
+                    glyph.width = width;
+                    glyph.height = height;
+                    glyph.hasBitmap = true;
+                    glyph.alpha.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+                    for (int row = 0; row < height; ++row)
+                        std::memcpy(&glyph.alpha[static_cast<std::size_t>(row) * width],
+                            pixels + static_cast<std::size_t>(y0 + row) * texWidth + x0, static_cast<std::size_t>(width));
+                }
+            }
+            penX += packed->AdvanceX;
+        }
+        result.push_back(std::move(glyph));
+    }
+    return result;
 }
 
 // Largest power of two that does not exceed the device limit.

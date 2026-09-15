@@ -77,6 +77,20 @@ inline void draw(ImDrawList* list, ImVec2 p, const char* name, ImU32 tint, float
     const ImVec2 extent=size(name,scale);
     list->AddImage(atlas->TexID,p,{p.x+extent.x,p.y+extent.y},uv0,uv1,tint);
 }
+// Texture rectangle and pixel size of one mask inside the shared atlas. A caller
+// that draws part of a mask (for example one connected region of a Write entry)
+// needs both to map mask pixels onto UVs; the whole-image draw above uses the
+// same rectangle.
+inline void textureRect(const char* name, ImVec2* uv0, ImVec2* uv1) {
+    const int index=find(name);
+    auto* atlas=ImGui::GetIO().Fonts;
+    atlas->CalcCustomRectUV(atlas->GetCustomRectByIndex(rectangles[index]),uv0,uv1);
+}
+inline void maskSize(const char* name, int* width, int* height) {
+    const auto f=entry(find(name));
+    if(width)*width=f.width;
+    if(height)*height=f.height;
+}
 inline void line(const char* name, ImU32 tint=IM_COL32(229,237,245,255)) {
     const ImVec2 natural=size(name);
     const float scale=natural.x>0?std::min(1.0f,ImGui::GetContentRegionAvail().x/natural.x):1;

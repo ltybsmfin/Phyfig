@@ -1,7 +1,9 @@
 #include "editor.hpp"
+#include "editor_write.hpp"
 #include "formula.hpp"
 #include "component.hpp"
 #include "animation.hpp"
+#include "write_entry.hpp"
 #include "vulkan_host.hpp"
 #include "imgui_internal.h"
 #include <algorithm>
@@ -132,10 +134,20 @@ void Editor::initializeRenderers() {
         const float ux=(b.x-a.x)/length,uy=(b.y-a.y)/length;
         for(float t=15*scale;t<length && t<5000;t+=24*scale) { ImVec2 q{a.x+ux*t,a.y+uy*t}; d->AddLine(q,{q.x-8*scale*ux-12*scale*uy,q.y-8*scale*uy+12*scale*ux},c,std::max(0.75f,1.4f*scale)); }
     };
-    renderers_["text"]=[this](ImDrawList* d,const Json& o,State s,ImU32 c) { const auto& p=o["properties"]; d->AddText(ImGui::GetFont(),f(p,"size")*canvasScale(),screen(s.x,s.y),c,p["text"].get_ref<const std::string&>().c_str()); };
+    renderers_["text"]=[this](ImDrawList* d,const Json& o,State s,ImU32 c) {
+        const auto& p=o["properties"]; const float size=f(p,"size")*canvasScale(); const auto pos=screen(s.x,s.y);
+        const char* text=p["text"].get_ref<const std::string&>().c_str();
+        try { if(write_draw::text(d,o,pos,size,text,c,active().time(),canvasScale())) return; }
+        catch(const std::exception&) {}
+        d->AddText(ImGui::GetFont(),size,pos,c,text);
+    };
     renderers_["formula"]=[this](ImDrawList* d,const Json& o,State s,ImU32 c) {
-        const auto& p=o["properties"]; try { math_text::draw(d,screen(s.x,s.y),p["formula"].get_ref<const std::string&>().c_str(),c,f(p,"scale")*canvasScale()); }
-        catch(const std::exception&) { d->AddText(screen(s.x,s.y),IM_COL32(200,30,30,255),"未知公式资源"); }
+        const auto& p=o["properties"]; const auto pos=screen(s.x,s.y); const float scale=f(p,"scale")*canvasScale();
+        try {
+            if(write_draw::formula(d,o,pos,c,scale,active().time(),canvasScale(),workspace_.resourceGeneration())) return;
+            math_text::draw(d,pos,p["formula"].get_ref<const std::string&>().c_str(),c,scale);
+        }
+        catch(const std::exception&) { d->AddText(pos,IM_COL32(200,30,30,255),"未知公式资源"); }
     };
     renderers_["polyline"]=[this](ImDrawList* d,const Json& o,State s,ImU32 c) { const auto& p=o["properties"]; const auto& points=p["points"];
         for(size_t i=1;i<points.size();++i) d->AddLine(screen(s.x+points[i-1][0].get<double>(),s.y+points[i-1][1].get<double>()),screen(s.x+points[i][0].get<double>(),s.y+points[i][1].get<double>()),c,strokeWidth(p));
@@ -452,6 +464,7 @@ void Editor::inspector() {
     // Work on a copy: commands may replace the entire document on commit.
     const Json o=*object; const Json p=o["properties"];
     if(o["type"]=="formula")formulaPanel(o);
+    if(o["type"]=="text" || o["type"]=="formula")writePanel(o);
     Json displayedProperties=p;
     if(scope_=="component") for(const auto& child:components::materialize(active().scene())) if(child["id"]==selected_) displayedProperties=child["properties"];
     ImGui::Text("ID: %s",selected_.c_str()); ImGui::Text("类型: %s",o["type"].get_ref<const std::string&>().c_str());
@@ -753,6 +766,7 @@ void Editor::draw(float dt) {
             if(ImGui::MenuItem("斜面接圆弧"))attempt({{"method","load"},{"scope","scene"},{"args",{{"path","scenes/incline-arc.json"}}}});
             if(ImGui::MenuItem("上抛运动"))attempt({{"method","replace"},{"scope","scene"},{"args",{{"document",Document::demo()}}}});
             if(ImGui::MenuItem("公式与阶跃动画")) { attempt({{"method","replace"},{"scope","scene"},{"args",{{"document",animation::demo()}}}});selected_="block";channel_="y";animationWorkspace_=true;historyOpen_=false;fitRequested_=true; }
+            if(ImGui::MenuItem("手写入场（中文 + 公式）")) { attempt({{"method","replace"},{"scope","scene"},{"args",{{"document",write_entry::demo()}}}});selected_="note";animationWorkspace_=false;historyOpen_=false;fitRequested_=true; }
             ImGui::EndMenu();
         }
         ImGui::Separator();
