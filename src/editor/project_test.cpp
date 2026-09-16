@@ -57,6 +57,46 @@ int main(){try{
     {std::ofstream out(std::filesystem::u8path(bad));out<<incompatible;}
     rejected=false;try{newLibrary.dispatch({{"method","load_project"},{"args",{{"path",bad},{"discard",true}}}});}catch(...){rejected=true;}
     check(rejected && newLibrary.document().archive()==newBefore,"Malformed zoom layout escaped staged validation");
+    // Formula writing plans are additive metadata, not bitmap content: a project
+    // saved before plans existed must still load against a library that has one,
+    // and the installed plan is what the reloaded project uses.
+    {
+        auto findAsset=[](const Json& resources,const std::string& name)->const Json&{
+            for(const auto& asset:resources.at("formulaMasks"))if(asset.at("name")==name)return asset;
+            throw std::runtime_error("Missing formula asset "+name);
+        };
+        const Json plan={{"version",1},{"width",1},{"height",1},{"componentCount",1},
+            {"units",Json::array({Json{{"kind","glyph"},{"box",{0,0,1,1}},{"components",{0}}}})}};
+        Workspace plannedLibrary;
+        auto planned=mask;planned["writingPlan"]=plan;
+        plannedLibrary.setResources({{"formulaScale",.3},{"formulaMasks",Json::array({planned})}});
+        plannedLibrary.dispatch({{"method","load_project"},{"args",{{"path",legacy}}}});
+        check(plannedLibrary.resources()["formulaMasks"].size()==1,"Loading an old project dropped or duplicated its assets");
+        check(findAsset(plannedLibrary.resources(),"old")==planned,
+            "An old project without a writing plan did not adopt the installed one");
+        const auto plannedPath=(base/"planned-library.physproj").u8string();
+        plannedLibrary.dispatch({{"method","save_project"},{"args",{{"path",plannedPath},{"overwrite",true}}}});
+        // The other direction: a project that carries a plan must load against a
+        // library that does not have one, and must not lose the plan.
+        Workspace plainLibrary;
+        plainLibrary.setResources({{"formulaScale",.3},{"formulaMasks",Json::array({mask})}});
+        plainLibrary.dispatch({{"method","load_project"},{"args",{{"path",plannedPath}}}});
+        check(findAsset(plainLibrary.resources(),"old").contains("writingPlan"),
+            "A writing plan stored by the project was dropped by a plan-less library");
+        // A malformed or mismatched plan is still rejected: stored data is never trusted.
+        for(const Json& broken:Json::array({
+                Json{{"version",1},{"width",1},{"height",1},{"componentCount",1},{"units",Json::array({Json{{"components",{0,1}}}})}},
+                Json{{"version",1},{"width",2},{"height",1},{"componentCount",1},{"units",Json::array({Json{{"components",{0}}}})}},
+                Json{{"version",2},{"width",1},{"height",1},{"componentCount",1},{"units",Json::array({Json{{"components",{0}}}})}},
+                Json{{"version",1},{"width",1},{"height",1},{"componentCount",1},{"units",Json::array()}}})){
+            Json malicious;{std::ifstream in(std::filesystem::u8path(legacy));in>>malicious;}
+            malicious["resources"]["formulaMasks"][0]["writingPlan"]=broken;
+            {std::ofstream out(std::filesystem::u8path(bad));out<<malicious;}
+            const auto beforeLoad=plainLibrary.document().archive();
+            rejected=false;try{plainLibrary.dispatch({{"method","load_project"},{"args",{{"path",bad},{"discard",true}}}});}catch(...){rejected=true;}
+            check(rejected && plainLibrary.document().archive()==beforeLoad,"Malformed writing plan escaped validation");
+        }
+    }
     // A4/U2: layout is persisted but excluded from the concurrency token, while
     // resources stay covered so a background asset cannot be lost silently.
     {

@@ -53,7 +53,7 @@
       "visible": true,
       "locked": false,
       "step": 0,
-      "write": {"start": 1.8, "duration": 2.6, "stagger": 0.5, "phase": 0.6}
+      "write": {"start": 1.8, "duration": 2.6, "stagger": 1.0, "phase": 0.6}
     },
     {
       "id": "position",
@@ -70,7 +70,7 @@
       "visible": true,
       "locked": false,
       "step": 0,
-      "write": {"start": 3.2, "duration": 2.6, "stagger": 0.5, "phase": 0.6}
+      "write": {"start": 3.2, "duration": 2.6, "stagger": 1.0, "phase": 0.6}
     }
   ]
 }

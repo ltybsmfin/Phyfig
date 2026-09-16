@@ -138,6 +138,27 @@ def run(executable,formula_python):
         scene=bridge.request('get_scene')
         project=folder/'portable.physproj';token=bridge.request('get_project')['token']
         bridge.request('save_project',{'path':str(project),'expectedToken':token})
+        # The runtime formula carries its structural writing plan into the project:
+        # it names every ink component of the stored mask exactly once, and the
+        # fraction bar comes before the units above and below it.
+        package=json.loads(project.read_text(encoding='utf-8'))
+        stored=next(a for a in package['resources']['formulaMasks'] if a['name']==asset)
+        plan=stored['writingPlan']
+        assert plan['version']==1 and plan['componentCount']>0 and plan['units'],stored.get('name')
+        assert (plan['width'],plan['height'])==(stored['width'],stored['height']),stored.get('name')
+        named=[c for unit in plan['units'] for c in unit['components']]
+        assert sorted(named)==list(range(plan['componentCount'])),'writing plan must name every component exactly once'
+        assert all(unit['components'] for unit in plan['units'])
+        boxes=[unit['box'] for unit in plan['units']]
+        bars=[index for index,unit in enumerate(plan['units']) if unit['kind']=='rule']
+        assert bars,'the runtime formula must plan at least one rule line'
+        for bar in bars:
+            box=boxes[bar]
+            operands=[index for index,other in enumerate(boxes) if index!=bar
+                and other[0]>=box[0]-2 and other[2]<=box[2]+2
+                and (other[3]<=box[1]+.5 or other[1]>=box[3]-.5)]
+            if not operands:continue
+            assert all(bar<index for index in operands),f'fraction bar {bar} must precede {operands}'
         # All export modes share the frozen document and camera.
         for format,fps,width,height in [('png',4,1280,720),('mp4',6,320,180),('gif',6,320,180)]:
             output=folder/('frames' if format=='png' else 'animation.'+format)

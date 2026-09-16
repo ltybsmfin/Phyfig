@@ -61,9 +61,10 @@ struct Component {
     float strokeLength = 0.f;
 };
 
-// One staggered step: a character for text, a connected region for formulas. A
-// region whose coverage never reaches the ink level still becomes a unit: the fill
-// shows it, only its outline phase stays empty.
+// One staggered step: a character for text, one glyph or rule of a formula
+// (which may consist of several ink regions: `=`, `i`, `%`). A region whose
+// coverage never reaches the ink level still becomes a unit: the fill shows it,
+// only its outline phase stays empty.
 struct Unit {
     std::vector<Component> components;
     float strokeLength = 0.f;
@@ -73,14 +74,34 @@ struct Layout { std::vector<Unit> units; float totalLength = 0.f; };
 // 8-bit coverage, row major, `width * height` bytes.
 struct Mask { const unsigned char* alpha = nullptr; int width = 0, height = 0; };
 
+// One unit of a writing plan: which ink components form one staggered step. The
+// components are indices into the mask's connected regions in raster-scan order
+// (the same enumeration the tracer uses), so a plan can only ever regroup and
+// reorder the regions that are really there.
+enum class PlanKind { Glyph, Rule };
+struct PlanUnitView { const int* components = nullptr; int count = 0; PlanKind kind = PlanKind::Glyph; };
+
+// Optional structural order for a formula mask, generated from the same PDF the
+// mask was rendered from. A fraction is written bar first, a base is followed by
+// its scripts and a radical stays next to its radicand — none of which the raster
+// reading order can express. The plan is used only when it describes exactly the
+// mask at hand (see buildLayout); otherwise the reading order stays in charge.
+struct PlanView {
+    int width = 0, height = 0;  // mask size the plan was generated for
+    int componentCount = 0;     // ink components of that mask
+    const PlanUnitView* units = nullptr;
+    int unitCount = 0;
+};
+
 enum class UnitMode {
     // All regions of one mask form a single unit (one text character).
     SingleUnit,
     // Every connected region becomes its own unit, ordered in reading order
-    // (bands top to bottom, then left to right). Used for formulas.
+    // (bands top to bottom, then left to right). Used for formulas without a
+    // writing plan; with one, the plan's order and grouping are used instead.
     ComponentPerUnit,
 };
-struct UnitRequest { Mask mask; float x = 0.f, y = 0.f; UnitMode mode = UnitMode::SingleUnit; };
+struct UnitRequest { Mask mask; float x = 0.f, y = 0.f; UnitMode mode = UnitMode::SingleUnit; PlanView plan{}; };
 
 // Geometry is built in mask pixels; `x`/`y` place a mask inside the shared
 // unit coordinate space (for text: the pen position of that character).

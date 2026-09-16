@@ -9,7 +9,8 @@
 1. `formulas.json` 保存 28 个命名公式的 LaTeX 源码。
 2. `generate.py` 使用本机 MiKTeX `pdflatex` 和 `amsmath` 排版。
 3. pypdfium2 将排版结果转为透明度蒙版，生成 `formula_cache.hpp`。公式以白色蒙版保存，可按草稿或暗色界面着色。
-4. 应用把蒙版加入现有 ImGui 字体图集，由 Vulkan 后端显示；上下标、矢量符号和分式均来自真实排版结果。
+4. 同一次生成还写出 `formula_writing_plan.hpp`：每个公式的**书写顺序计划**，供 Write 手写入场按结构/字形推进（分式先分数线→分子→分母、嵌套递归、外层从左到右、底数后紧跟上下标、根号与被开方连续、算子先于它的上下限、箭头/帽子跟在底数之后）。它只重新排序/分组掩码里已有的墨迹连通域，不改变任何像素；`formula_cache.hpp` 逐字节不变。
+5. 应用把蒙版加入现有 ImGui 字体图集，由 Vulkan 后端显示；上下标、矢量符号和分式均来自真实排版结果。
 
 这次生成已在本机运行成功，28 个公式的排版 PDF 与检查用 PNG 位于项目 `build/latex-formulas/`。最初尝试的 `dvipng` 在本机未完成，因此最终生成流程改用 `pdflatex + pypdfium2`，运行程序不依赖 dvipng。
 
@@ -26,4 +27,13 @@ cmake --build --preset debug --target physics_editor vulkan_kinematics
 
 MiKTeX 需要已安装 `amsmath` 和标准 Computer Modern 字体。本次使用已有本地宏包完成生成；脚本禁用自动安装和 shell escape，仅用于可信的项目源公式。缓存记录源码 SHA-256，CMake 配置会检查它，避免源公式修改后仍显示旧缓存。
 
-运行时新增公式已经采用异步排版和工程内资产保存；SVG/曲线图形输出与无损矢量导出尚未实现。
+生成器按 LF 写出两个头文件（`.gitattributes` 把缓存标记为 `-text` 的精确字节资产），所以在 Windows 上重新生成 `formula_cache.hpp` 不会整文件变成 CRLF。`tools/formula_writing_plan.py` 负责计划推导：
+
+* **字形按对象标识归属**：`get_textobj(i).raw` 的地址与 `page.get_objects()` 对象地址一一对应，包围盒重叠也不会抢错字形；没有所属对象的合成空白直接过滤。
+* 字形取 text page 的**紧**字符框（`get_charbox(..., loose=False)`，即墨迹范围而不是会盖住被开方区域的 advance 框），规则线取 page object 的精确 bounds。
+* **主体优先**：常见算子的上下限、向量箭头与帽子即使先出现在内容流里，也会排到主体之后。该规则依赖几何关系，不保证所有跨行装饰；整式上横线可能仍先于内容出现。
+* **分式**：分子/分母是"从分数线到最近墨迹远边"的连通带；同侧墨迹被多条分数线认领时，"某侧只有这一个候选"的分数线优先，其次内层优先；嵌套必须是严格单向的（间隙 <= 2 × 最近间隙），因此 aligned 里上下两行各自的分式互不认领。逐 texel 归属仍取"包含该 texel 的最小框"，所以根号框不会吞掉被开方字形。
+
+已知限制：`\overbrace` 这类比内容更高的装饰会被当成主体；整式上横线与所在分子一起输出；不做完整 TeX 语法解析。任何一步不可靠时该公式就不带计划，渲染与显示照常。改了生成器后必须重新运行 `python assets/formulas/generate.py` 才能刷新内置计划表。
+
+运行时新增公式已经采用异步排版和工程内资产保存（计划随资产一起存进 `.physproj`）；SVG/曲线图形输出与无损矢量导出尚未实现。

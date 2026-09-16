@@ -49,6 +49,23 @@ std::string resourceFingerprint(const Json& resources) {
     char text[32]; std::snprintf(text,sizeof(text),"%016llx",static_cast<unsigned long long>(hash));
     return text;
 }
+// Two same-named formula assets must agree on everything the bitmap depends on:
+// name, dimensions, the full RLE payload, the LaTeX source and any extension
+// field. A changed mask is a real collision and is rejected.
+//
+// The structural writing plan is additive metadata rather than bitmap content: a
+// project saved before plans existed must still load against a library that has
+// one, and a project that carries a plan must still load against a library that
+// does not. The installed asset wins, and additive fields the installed asset is
+// missing are carried over from the project (see compatibleResources).
+void requireCompatibleAsset(const Json& saved,const Json& installed) {
+    require(saved.is_object() && installed.is_object(),"Invalid project formula resource");
+    Json project=saved,library=installed;
+    project.erase("writingPlan");library.erase("writingPlan");
+    if(!project.contains("latex") && library.contains("latex"))library.erase("latex");
+    if(!library.contains("latex") && project.contains("latex"))project.erase("latex");
+    require(project==library,"Project formula id conflicts with an existing asset");
+}
 Json compatibleResources(const Json& saved,const Json& installed) {
     formula_resources::validate(saved);
     if(installed.empty())return saved;
@@ -59,12 +76,20 @@ Json compatibleResources(const Json& saved,const Json& installed) {
     std::map<std::string,const Json*> masks;
     for(const auto& mask:installed.at("formulaMasks"))masks.emplace(mask.at("name").get<std::string>(),&mask);
     auto merged=installed;
+    std::map<std::string,std::size_t> positions;
+    for(std::size_t i=0;i<merged.at("formulaMasks").size();++i)positions[merged["formulaMasks"][i].at("name").get<std::string>()]=i;
     std::map<std::string,bool> seen;
     for(const auto& mask:saved["formulaMasks"]) {
         const auto name=mask.at("name").get<std::string>();require(seen.emplace(name,true).second,"Duplicate project formula resource");
         const auto found=masks.find(name);
         if(found==masks.end())merged["formulaMasks"].push_back(mask);
-        else require(*found->second==mask,"Project formula id conflicts with an existing asset");
+        else {
+            requireCompatibleAsset(mask,*found->second);
+            // Keep additive metadata that only the project has (a plan or source
+            // text written by a newer build than the installed library).
+            Json& target=merged["formulaMasks"][positions.at(name)];
+            for(const char* key:{"latex","writingPlan"})if(!target.contains(key) && mask.contains(key))target[key]=mask[key];
+        }
     }
     formula_resources::validate(merged);return merged;
 }

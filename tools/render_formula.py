@@ -15,10 +15,14 @@ CLI::
     python render_formula.py --input request.json --output result.json
 
 ``request.json``：``{"latex": "<不含外层 $ 的数学 LaTeX>"}``
-``result.json`` 成功：``{ok, latex, name, width, height, rle, displayScale}``
+``result.json`` 成功：``{ok, latex, name, width, height, rle, displayScale, writingPlan?}``
 失败：``{ok: false, error: "..."}``
 
 ``rle`` 是 ``[run_length, value, ...]`` 的灰度 alpha 行程编码，行优先、无 padding。
+
+``writingPlan`` 是可选的书写顺序元数据（见 ``formula_writing_plan``）：它只是把
+掩码里已有的墨迹连通域重新排序/分组（分式先分数线，主体后紧跟上下标），既不改变
+alpha，也不改变任何 texel 的归属。推导失败时字段直接省略，渲染结果照常返回。
 """
 import argparse
 import hashlib
@@ -30,6 +34,8 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+
+from formula_writing_plan import build_plan, extract_atoms
 
 # 渲染与尺寸上限（像素）
 RENDER_DPI = 240
@@ -201,10 +207,13 @@ def _compile_tex(latex, work, run):
 
 
 def _render_alpha(pdfium, pdf_path):
-    """把单页 PDF 渲染成 'L' 模式的 alpha 图。
+    """把单页 PDF 渲染成 'L' 模式的 alpha 图，并抽取书写顺序原子。
 
     兼容性说明：pypdfium2 的 ``PdfDocument`` 支持 with 语句，但 ``PdfPage``
     在 5.x 里没有 ``__enter__``/``__exit__``，所以统一显式 close()。
+
+    返回 ``(alpha, atoms, page_size, image_size)``；``atoms`` 为 None 时表示这一页
+    拿不到可靠的字形/规则线结构，调用方就省略 writingPlan。
     """
     pdf = pdfium.PdfDocument(pdf_path)
     try:
@@ -222,9 +231,16 @@ def _render_alpha(pdfium, pdf_path):
             # fill_color 的 alpha=0 让背景透明，字形留在 alpha 通道里。
             bitmap = page.render(scale=scale, fill_color=(255, 255, 255, 0))
             try:
-                return bitmap.to_pil().convert('RGBA').getchannel('A')
+                rendered = bitmap.to_pil()
+                image_size = rendered.size
+                alpha = rendered.convert('RGBA').getchannel('A')
             finally:
                 bitmap.close()
+            try:
+                atoms = extract_atoms(pdfium, page)
+            except Exception:  # noqa: BLE001 - 结构不可得时只是没有计划，不影响渲染
+                atoms = None
+            return alpha, atoms, (width, height), image_size
         finally:
             page.close()
     finally:
@@ -232,7 +248,7 @@ def _render_alpha(pdfium, pdf_path):
 
 
 def _alpha_to_rle(alpha, Image):
-    """裁剪空白、加 1px 边框并做行程编码。返回 (padded, raw, rle)。"""
+    """裁剪空白、加 1px 边框并做行程编码。返回 (padded, raw, rle, crop)。"""
     box = alpha.getbbox()
     if not box:
         raise ValueError('公式没有可显示内容')
@@ -253,7 +269,7 @@ def _alpha_to_rle(alpha, Image):
             end += 1
         rle.extend((end - index, raw[index]))
         index = end
-    return padded, raw, rle
+    return padded, raw, rle, box
 
 
 def render_formula(source, *, pdfium=None, pil_image=None, runner=None):
@@ -273,11 +289,18 @@ def render_formula(source, *, pdfium=None, pil_image=None, runner=None):
         work = Path(folder)
         (work / 'formula.tex').write_text(build_tex(source), encoding='ascii')
         _compile_tex(latex, work, run)
-        alpha = _render_alpha(pdfium, work / 'formula.pdf')
-        padded, raw, rle = _alpha_to_rle(alpha, pil_image)
+        alpha, atoms, page_size, image_size = _render_alpha(pdfium, work / 'formula.pdf')
+        padded, raw, rle, crop = _alpha_to_rle(alpha, pil_image)
         name = 'latex_' + hashlib.sha256(source.encode('ascii') + raw).hexdigest()
-        return dict(ok=True, latex=source, name=name, width=padded.width,
-                    height=padded.height, rle=rle, displayScale=.5)
+        result = dict(ok=True, latex=source, name=name, width=padded.width,
+                      height=padded.height, rle=rle, displayScale=.5)
+        if atoms is not None:
+            try:
+                result['writingPlan'] = build_plan(atoms, raw, padded.width, padded.height,
+                                                   (crop[0], crop[1]), page_size, image_size)
+            except Exception:  # noqa: BLE001 - 计划只是可选元数据，推导失败就省略
+                pass
+        return result
     finally:
         shutil.rmtree(folder, ignore_errors=True)
 

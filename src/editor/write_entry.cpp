@@ -456,9 +456,10 @@ float medianHeight(const std::vector<Component>& components) {
 }
 
 // Reading order: vertical bands separated by more than one median glyph height,
-// top to bottom, and left to right inside a band. This is deterministic for a
-// given mask and keeps a formula's rows (numerator, bar, denominator) in a
-// explainable order without any LaTeX parsing. The keys are the ink bounds, never
+// top to bottom, and left to right inside a band. Deterministic for a given
+// mask. This is the fallback for a formula without a usable writing plan
+// (the plan supplies the real structural order: bar before numerator and
+// denominator, base before scripts). The keys are the ink bounds, never
 // the drawn bounds: the filter ring widens every region by the same texel, and
 // widening the draw range must not reshuffle the animation.
 void sortReadingOrder(std::vector<Component>& components) {
@@ -485,6 +486,28 @@ void sortReadingOrder(std::vector<Component>& components) {
     }
     components = std::move(ordered);
 }
+// A plan is trusted only when it describes exactly the mask at hand: same size,
+// same number of ink components and every component referenced exactly once. A
+// stale, hand-edited or truncated plan then falls back to the reading order
+// instead of dropping ink or drawing it twice.
+bool planFits(const PlanView& plan, int width, int height, std::size_t components) {
+    if (plan.units == nullptr || plan.unitCount <= 0) return false;
+    if (plan.width != width || plan.height != height) return false;
+    if (plan.componentCount != static_cast<int>(components)) return false;
+    std::vector<char> used(components, 0);
+    for (int unit = 0; unit < plan.unitCount; ++unit) {
+        const PlanUnitView& view = plan.units[unit];
+        if (view.components == nullptr || view.count <= 0) return false;
+        for (int index = 0; index < view.count; ++index) {
+            const int component = view.components[index];
+            if (component < 0 || component >= static_cast<int>(components) || used[static_cast<std::size_t>(component)]) return false;
+            used[static_cast<std::size_t>(component)] = 1;
+        }
+    }
+    for (char value : used) if (!value) return false;
+    return true;
+}
+
 } // namespace
 
 Layout buildLayout(const std::vector<UnitRequest>& requests) {
@@ -507,7 +530,23 @@ Layout buildLayout(const std::vector<UnitRequest>& requests) {
             layout.units.push_back(std::move(unit));
         } else if (components.empty()) {
             layout.units.emplace_back();  // keep one unit per formula mask
+        } else if (planFits(request.plan, request.mask.width, request.mask.height, components.size())) {
+            // The formula's own writing order. One plan unit is one staggered
+            // step and owns one or more of the mask's ink regions, so `=` is
+            // drawn as one sign instead of two unrelated bars.
+            for (int index = 0; index < request.plan.unitCount; ++index) {
+                const PlanUnitView& planned = request.plan.units[index];
+                Unit unit;
+                for (int component = 0; component < planned.count; ++component) {
+                    Component moved = std::move(components[static_cast<std::size_t>(planned.components[component])]);
+                    unit.strokeLength += moved.strokeLength;
+                    unit.components.push_back(std::move(moved));
+                }
+                layout.totalLength += unit.strokeLength;
+                layout.units.push_back(std::move(unit));
+            }
         } else {
+            // No (usable) plan: keep the old, explainable reading order.
             sortReadingOrder(components);
             for (Component& component : components) {
                 Unit unit;
@@ -630,9 +669,9 @@ Json demo() {
     add("note", "text", "中文说明", {{"x", -6.0}, {"y", 2.8}, {"text", "沿字形轮廓逐步描绘，再填充"}, {"size", 36}});
     scene["objects"].back()["write"] = {{"start", 0.8}, {"duration", 3.2}, {"stagger", 0.45}, {"phase", 0.65}};
     add("flight", "formula", "飞行时间", {{"x", -6.0}, {"y", -0.2}, {"formula", "flight"}, {"scale", 2.0}});
-    scene["objects"].back()["write"] = {{"start", 1.8}, {"duration", 2.6}, {"stagger", 0.5}, {"phase", 0.6}};
+    scene["objects"].back()["write"] = {{"start", 1.8}, {"duration", 2.6}, {"stagger", 1.0}, {"phase", 0.6}};
     add("position", "formula", "位置公式", {{"x", -6.0}, {"y", -3.4}, {"formula", "position_y"}, {"scale", 2.0}});
-    scene["objects"].back()["write"] = {{"start", 3.2}, {"duration", 2.6}, {"stagger", 0.5}, {"phase", 0.6}};
+    scene["objects"].back()["write"] = {{"start", 3.2}, {"duration", 2.6}, {"stagger", 1.0}, {"phase", 0.6}};
     return scene;
 }
 }

@@ -10,10 +10,14 @@
 #include "component.hpp"
 #include "font_support.hpp"
 #include "formulas/formula_cache.hpp"
+#include "formulas/formula_writing_plan.hpp"
+#include "formula_plan.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -408,6 +412,194 @@ void testUnitOrder() {
     check(blank.units.size() == 1, "An empty formula mask keeps one unit");
 }
 
+// How many ink texels a layout really draws: every span texel whose coverage
+// reaches the ink level. The plan only regroups regions, so the number has to
+// stay exactly the mask's ink texel count.
+std::size_t drawnInkTexels(const we::Layout& layout, const Mask8& mask) {
+    std::size_t total = 0;
+    for (const auto& unit : layout.units) {
+        for (const auto& component : unit.components) {
+            for (std::size_t row = 0; row < component.rows.size(); ++row) {
+                const int y = static_cast<int>(component.minY) + static_cast<int>(row);
+                if (y < 0 || y >= mask.height) throw std::runtime_error("A fill row must stay inside the mask");
+                for (const auto& span : component.rows[row]) {
+                    for (int x = static_cast<int>(span.x0); x < static_cast<int>(span.x1); ++x) {
+                        if (mask.alpha[static_cast<std::size_t>(y) * mask.width + x] >= 128) ++total;
+                    }
+                }
+            }
+        }
+    }
+    return total;
+}
+
+std::size_t maskInkTexels(const Mask8& mask) {
+    std::size_t total = 0;
+    for (unsigned char value : mask.alpha) if (value >= 128) ++total;
+    return total;
+}
+
+const formula_cache::Entry& builtin(const char* name) {
+    for (const auto& entry : formula_cache::entries) if (std::strcmp(name, entry.name) == 0) return entry;
+    throw std::runtime_error(std::string("Unknown built-in formula: ") + name);
+}
+
+Mask8 decodeBuiltin(const formula_cache::Entry& entry) {
+    Mask8 mask(entry.width, entry.height);
+    std::size_t position = 0;
+    for (std::size_t index = 0; index < entry.bytes; index += 2) {
+        for (int repeat = 0; repeat < entry.rle[index]; ++repeat) {
+            check(position < mask.alpha.size(), "Built-in mask overflow");
+            mask.alpha[position++] = entry.rle[index + 1];
+        }
+    }
+    check(position == mask.alpha.size(), "Incomplete built-in mask");
+    return mask;
+}
+
+const formula_writing_plan::Entry& builtinPlan(const char* name) {
+    for (const auto& entry : formula_writing_plan::entries) if (std::strcmp(name, entry.name) == 0) return entry;
+    throw std::runtime_error(std::string("Unknown built-in writing plan: ") + name);
+}
+
+we::PlanView planView(const formula_writing_plan::Entry& entry, std::vector<we::PlanUnitView>& storage) {
+    storage.clear();
+    for (int index = 0; index < entry.unitCount; ++index) {
+        storage.push_back({entry.units[index].components, entry.units[index].count,
+            entry.units[index].kind == 1 ? we::PlanKind::Rule : we::PlanKind::Glyph});
+    }
+    return {entry.width, entry.height, entry.componentCount, storage.data(), entry.unitCount};
+}
+
+// The writing plan replaces the raster reading order: the bar of a fraction is
+// drawn first, then its numerator and denominator, and one plan unit may own
+// several ink regions (the two bars of `=`).
+void testWritingPlanOrder() {
+    Mask8 mask(40, 30);
+    mask.rect(14, 2, 22, 6);    // numerator, component 0
+    mask.rect(32, 2, 36, 4);    // unrelated small region, component 1
+    mask.rect(6, 12, 30, 13);   // fraction bar, component 2
+    mask.rect(14, 20, 22, 24);  // denominator, component 3
+    const int bar[] = {2};
+    const int top[] = {0, 1};
+    const int bottom[] = {3};
+    const we::PlanUnitView planned[] = {{bar, 1, we::PlanKind::Rule}, {top, 2, we::PlanKind::Glyph}, {bottom, 1, we::PlanKind::Glyph}};
+    we::UnitRequest request;
+    request.mask = mask.view();
+    request.mode = we::UnitMode::ComponentPerUnit;
+    request.plan = {mask.width, mask.height, 4, planned, 3};
+    const auto layout = we::buildLayout({request});
+    check(layout.units.size() == 3, "One unit per plan unit");
+    // Bar first, and its ink is the wide thin rule.
+    check(layout.units[0].components.size() == 1, "The bar is one component");
+    checkNear(layout.units[0].components[0].inkMinY, 12.0, 1e-4, "The plan must draw the bar first");
+    // Then the numerator glyph together with the unrelated region: one stagger step.
+    check(layout.units[1].components.size() == 2, "A plan unit may group several ink regions");
+    checkNear(layout.units[1].components[0].inkMinY, 2.0, 1e-4, "The numerator follows the bar");
+    checkNear(layout.units[1].components[1].inkMinX, 32.0, 1e-4, "The grouped region is drawn with its unit");
+    checkNear(layout.units[2].components[0].inkMinY, 20.0, 1e-4, "The denominator comes last");
+    check(layout.totalLength > 0.f, "A planned layout must keep its stroke length");
+    checkOwnership(layout, mask, 0.f, 0.f, "A planned layout must still tile every texel exactly once");
+    check(drawnInkTexels(layout, mask) == maskInkTexels(mask), "A planned layout must not drop or duplicate ink");
+
+    // Without the plan the same mask keeps the reading order: top band first.
+    const auto fallback = we::buildLayout({{mask.view(), 0.f, 0.f, we::UnitMode::ComponentPerUnit}});
+    check(fallback.units.size() == 4, "Without a plan every region is its own unit");
+    checkNear(fallback.units[0].components[0].inkMinY, 2.0, 1e-4, "The reading order starts at the top band");
+}
+
+// A stale or inconsistent plan must never be used: the reading order stays.
+void testWritingPlanFallsBackWhenItDoesNotMatch() {
+    Mask8 mask(40, 30);
+    mask.rect(14, 2, 22, 6);
+    mask.rect(6, 12, 30, 13);
+    mask.rect(14, 20, 22, 24);
+    const int all[] = {2, 0, 1};
+    const we::PlanUnitView planned[] = {{all, 3, we::PlanKind::Glyph}};
+    auto layoutWith = [&](we::PlanView plan) {
+        we::UnitRequest request;
+        request.mask = mask.view();
+        request.mode = we::UnitMode::ComponentPerUnit;
+        request.plan = plan;
+        return we::buildLayout({request});
+    };
+    check(layoutWith({mask.width, mask.height, 3, planned, 1}).units.size() == 1, "A matching plan is used");
+    check(layoutWith({mask.width + 1, mask.height, 3, planned, 1}).units.size() == 3, "A plan for another size is ignored");
+    check(layoutWith({mask.width, mask.height, 4, planned, 1}).units.size() == 3, "A plan with the wrong component count is ignored");
+    const int repeated[] = {0, 0, 1};
+    const we::PlanUnitView duplicated[] = {{repeated, 3, we::PlanKind::Glyph}};
+    check(layoutWith({mask.width, mask.height, 3, duplicated, 1}).units.size() == 3, "A plan that repeats a component is ignored");
+    const int missing[] = {0, 1};
+    const we::PlanUnitView incomplete[] = {{missing, 2, we::PlanKind::Glyph}};
+    check(layoutWith({mask.width, mask.height, 3, incomplete, 1}).units.size() == 3, "A plan that drops a component is ignored");
+    const int outOfRange[] = {0, 1, 7};
+    const we::PlanUnitView beyond[] = {{outOfRange, 3, we::PlanKind::Glyph}};
+    check(layoutWith({mask.width, mask.height, 3, beyond, 1}).units.size() == 3, "A plan with an out-of-range component is ignored");
+}
+
+// The checked-in plan of a built-in formula must describe the checked-in mask.
+void testBuiltinWritingPlan() {
+    const auto& entry = builtin("flight");
+    Mask8 mask = decodeBuiltin(entry);
+    const auto& stored = builtinPlan("flight");
+    check(stored.width == entry.width && stored.height == entry.height, "The plan must belong to the same mask size");
+    // Without a plan every ink region is its own unit, so that layout counts the
+    // mask's components exactly; the stored plan has to name the same number.
+    const auto components = we::buildLayout({{mask.view(), 0.f, 0.f, we::UnitMode::ComponentPerUnit}});
+    check(components.units.size() == static_cast<std::size_t>(stored.componentCount),
+        "The plan must name exactly the mask's ink components");
+    std::vector<we::PlanUnitView> storage;
+    const we::PlanView plan = planView(stored, storage);
+    we::UnitRequest request;
+    request.mask = mask.view();
+    request.mode = we::UnitMode::ComponentPerUnit;
+    request.plan = plan;
+    const auto layout = we::buildLayout({request});
+    check(layout.units.size() == static_cast<std::size_t>(stored.unitCount), "Every plan unit becomes one staggered step");
+    // Exercise the exact lookup used by the live renderer, not only the raw table.
+    const auto* installed = physics_editor::formula_plan::find("flight");
+    check(installed != nullptr, "The live renderer must find the built-in flight plan");
+    request.plan = *installed;
+    const auto liveLayout = we::buildLayout({request});
+    check(liveLayout.units.size() == layout.units.size(), "Live lookup must use structural units, not the fallback");
+    for (std::size_t i = 0; i < layout.units.size(); ++i) {
+        check(liveLayout.units[i].components.size() == layout.units[i].components.size(), "Live and generated plan grouping must agree");
+        checkNear(liveLayout.units[i].components[0].inkMinX, layout.units[i].components[0].inkMinX, 0.001, "Live and generated plan order must agree");
+    }
+    checkOwnership(layout, mask, 0.f, 0.f, "The built-in plan must tile its mask exactly once");
+    check(drawnInkTexels(layout, mask) == maskInkTexels(mask), "The built-in plan must not drop or duplicate ink");
+
+    auto inkBounds = [](const we::Unit& unit) {
+        float minX = 1e9f, maxX = -1e9f, minY = 1e9f, maxY = -1e9f;
+        for (const auto& component : unit.components) {
+            minX = std::min(minX, component.inkMinX); maxX = std::max(maxX, component.inkMaxX);
+            minY = std::min(minY, component.inkMinY); maxY = std::max(maxY, component.inkMaxY);
+        }
+        return std::array<float, 4>{minX, minY, maxX, maxY};
+    };
+    // T comes first and `=` second: the outer row is written left to right.
+    const auto first = inkBounds(layout.units[0]);
+    for (const auto& unit : layout.units) check(first[0] <= inkBounds(unit)[0] + 0.5f, "flight must start at the leftmost glyph (T)");
+    const auto second = inkBounds(layout.units[1]);
+    check(second[0] > first[2], "`=` follows T");
+    check(layout.units[1].components.size() == 2, "The two bars of `=` form one unit");
+    // The fraction bar is a rule and precedes every unit above or below it.
+    check(stored.units[2].kind == 1, "flight's third unit must be the fraction bar");
+    const auto bar = inkBounds(layout.units[2]);
+    check(bar[3] - bar[1] <= 6.f, "A fraction bar is a thin rule");
+    for (std::size_t index = 0; index < layout.units.size(); ++index) {
+        if (index == 2) continue;
+        const auto box = inkBounds(layout.units[index]);
+        if (box[2] <= bar[0] + 1.f || box[0] >= bar[2] - 1.f) continue;  // outside the bar's span
+        const bool above = box[3] <= bar[1] + 1.f, below = box[1] >= bar[3] - 1.f;
+        if (!above && !below) continue;
+        check(2 < index, "The fraction bar must be drawn before its numerator and denominator");
+    }
+    // The denominator is the last unit and sits below the bar.
+    const auto last = inkBounds(layout.units.back());
+    check(last[1] > bar[3], "The denominator closes the fraction");
+}
+
 Json writeSpec(Json patch) {
     Json spec = {{"start", 1.0}, {"duration", 2.0}, {"stagger", 0.5}, {"phase", 0.5},
         {"outlineWidth", 1.5}, {"outline", true}, {"fill", true}, {"easing", "smooth"}};
@@ -763,6 +955,9 @@ int main(int argc, char** argv) {
         testFaintInkIsNeverDropped();
         testBorderAndHoleBoundaries();
         testUnitOrder();
+        testWritingPlanOrder();
+        testWritingPlanFallsBackWhenItDoesNotMatch();
+        testBuiltinWritingPlan();
         testCatalog();
         testTimingBoundaries();
         testPureTimeEvaluation();
@@ -772,7 +967,8 @@ int main(int argc, char** argv) {
         testDemoScene();
         std::cout << "Write entry tests passed: sub-pixel outlines, mask placement, fringe ownership, disjoint contours, holes, "
                      "filter support, faint ink, border and hole boundaries, "
-                     "unit order, catalog contract, timing boundaries, pure time evaluation, document contract, serialization, "
+                     "unit order, writing plan order and fallback, built-in flight plan, catalog contract, timing boundaries, "
+                     "pure time evaluation, document contract, serialization, "
                      "CJK chain, demo scene\n";
         return 0;
     } catch (const std::exception& e) {

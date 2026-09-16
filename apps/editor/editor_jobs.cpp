@@ -1,5 +1,6 @@
 #include "editor.hpp"
 #include "formula.hpp"
+#include "formula_plan.hpp"
 #include "formula_resources.hpp"
 #include "animation.hpp"
 #include "component.hpp"
@@ -65,14 +66,25 @@ void Editor::syncFormulaResources(){
     formula_resources::validate(workspace_.resources());
     require(workspace_.resources().at("formulaScale")==formula_cache::displayScale,"Unsupported formula scale");
     std::vector<math_text::Mask> masks;
+    std::vector<formula_plan::Plan> plans;
     for(const auto& a:workspace_.resources()["formulaMasks"]){
         bool builtin=false;
         for(const auto& b:formula_cache::entries)if(a["name"]==b.name){
             require(a["width"]==b.width && a["height"]==b.height && a["rle"]==std::vector<unsigned char>(b.rle,b.rle+b.bytes),"Built-in formula id conflicts with project asset");builtin=true;
         }
-        if(!builtin)masks.push_back({a["name"],a["width"],a["height"],a["rle"].get<std::vector<unsigned char>>()});
+        if(!builtin){
+            masks.push_back({a["name"],a["width"],a["height"],a["rle"].get<std::vector<unsigned char>>()});
+            // The plan travels with the asset; a formula without one keeps the
+            // reading-order animation instead of guessing a structure.
+            if(a.contains("writingPlan")){
+                auto plan=formula_plan::parse(a["writingPlan"]);
+                plan.name=a["name"].get<std::string>();
+                plans.push_back(std::move(plan));
+            }
+        }
     }
     math_text::setCustom(std::move(masks));
+    formula_plan::setInstalled(std::move(plans));
 }
 Json Editor::jobRequest(const Json& request,const std::string& source){
     const std::string method=request.at("method");const auto args=request.value("args",Json::object());
@@ -170,8 +182,21 @@ void Editor::pollJobs(){
                 const auto result=formulaJob_.state.at("result");
                 require(result.at("latex")==formulaRequest_["latex"] && result.at("displayScale")==.5,"Unexpected formula worker result");
                 Json asset={{"name",result.at("name")},{"latex",result.at("latex")},{"width",result.at("width")},{"height",result.at("height")},{"rle",result.at("rle")}};
+                if(result.contains("writingPlan"))asset["writingPlan"]=result["writingPlan"];
                 Json resources=workspace_.resources();
-                bool found=false;for(const auto& a:resources["formulaMasks"])if(a["name"]==asset["name"]){require(a==asset,"Formula asset id collision");found=true;}
+                bool found=false;
+                for(auto& a:resources["formulaMasks"])if(a["name"]==asset["name"]){
+                    // Same id means the same LaTeX and the same bitmap; the
+                    // optional plan is additive, so an asset stored by an older
+                    // build adopts it instead of reporting a collision.
+                    auto existing=a,generated=asset;
+                    existing.erase("writingPlan");generated.erase("writingPlan");
+                    if(!existing.contains("latex"))existing["latex"]=generated["latex"];
+                    require(existing==generated,"Formula asset id collision");
+                    if(!a.contains("latex"))a["latex"]=asset["latex"];
+                    if(!a.contains("writingPlan") && asset.contains("writingPlan"))a["writingPlan"]=asset["writingPlan"];
+                    found=true;
+                }
                 if(!found)resources["formulaMasks"].push_back(asset);
                 workspace_.setResources(resources);
                 formula_resources::validate(workspace_.resources());

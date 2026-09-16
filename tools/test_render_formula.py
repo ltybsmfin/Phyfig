@@ -222,6 +222,9 @@ class RenderMockedTest(unittest.TestCase):
         self.assertTrue(document.closed)
         self.assertTrue(page.closed)
         self.assertTrue(page.bitmap.closed)
+        # A fake page has no text page or page objects: the writing plan is
+        # optional metadata, so it must be omitted instead of guessed.
+        self.assertNotIn('writingPlan', result)
 
     def test_rejects_oversized_page_before_render(self):
         from PIL import Image
@@ -284,6 +287,19 @@ class RenderIntegrationTest(unittest.TestCase):
         result = render_formula(r'x=\begin{cases}t^2&t>0\\0&t\leq0\end{cases}')
         self.assertTrue(result['ok'])
         self.assertGreater(result['height'], 1)
+
+    def test_reports_a_self_consistent_writing_plan(self):
+        # The runtime worker result carries the structural order of the very mask
+        # it just produced: same size, every ink component named exactly once.
+        result = render_formula(r'\vec{v}_0=\frac{\Delta x}{\Delta t}')
+        plan = result['writingPlan']
+        self.assertEqual(plan['version'], 1)
+        self.assertEqual((plan['width'], plan['height']), (result['width'], result['height']))
+        self.assertGreater(plan['componentCount'], 0)
+        named = [component for unit in plan['units'] for component in unit['components']]
+        self.assertEqual(sorted(named), list(range(plan['componentCount'])))
+        self.assertTrue(all(unit['components'] for unit in plan['units']))
+        self.assertTrue(any(unit['kind'] == 'rule' for unit in plan['units']))
 
 
 def _rle_bytes(rle):

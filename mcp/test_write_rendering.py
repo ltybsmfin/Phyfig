@@ -71,6 +71,23 @@ def run(executable):
             # Allow only two 8-bit levels for GPU interpolation/rounding, not a
             # relaxed percentage of the canvas that could hide displaced letters.
             assert max_delta <= 2, f'Write completion jumps: max delta {max_delta}, {changed} changed channels; {folder}'
+            # The fixed demo's flight formula occupies this vertical band under
+            # fit framing. Locate its leftmost glyph (T) from the completed frame.
+            # Halfway through, T must already be complete. The old spatial order
+            # starts with numerator fragments and fails this live-path assertion.
+            stride = 1280 * 4 + 1  # native PNG writer uses filter 0 per scanline
+            blank, halfway, complete = images[0][2], images[1][2], images[3][2]
+            def column_has_ink(x):
+                return any(abs(complete[y*stride+1+4*x+c]-blank[y*stride+1+4*x+c]) > 8
+                           for y in range(320, 550) for c in range(3))
+            left = next(x for x in range(1280) if column_has_ink(x))
+            right = next(x for x in range(left+1, 1280) if not column_has_ink(x))
+            assert right-left >= 10, (left, right)
+            prefix_delta = max(abs(halfway[y*stride+1+4*x+c]-complete[y*stride+1+4*x+c])
+                               for y in range(320, 550) for x in range(left, right) for c in range(3))
+            assert prefix_delta <= 2, f'Formula starts before its T prefix: delta {prefix_delta}; {folder}'
+            report['formulaPrefixMaxChannelDelta'] = prefix_delta
+            (folder/'result.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
             worker_log = folder/'data/build/jobs'/job['id']/'worker.log'
             assert 'Validation errors: 0; warnings: 0' in worker_log.read_text(encoding='utf-8')
             project = bridge.request('get_project')

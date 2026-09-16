@@ -1,3 +1,21 @@
+# 公式 Write 入场：结构/字形顺序 · 2026-09-16
+
+范围：生成公式书写计划、C++ 编辑器消费与校验、工程兼容、实际渲染与导出。外层从左到右，分式按“分数线→分子→分母”展开，主体后跟上下标及常见装饰。文字路径与原 alpha 缓存保持不变；公式示例采用逐单元完成的节奏（`stagger=1`）。
+
+## 已实测
+
+- **Python 全量 121 项通过**：`python -B -m unittest discover -s tools -p "test_*.py"`。其中 `tools/test_formula_writing_plan.py` 37 项覆盖合成结构与归属、假 page 对象的**按对象标识归属**（包围盒重叠也不抢错）、真实 PDF 集成，以及内置计划表对 28 个缓存掩码的结构核对。
+- **28 个内置公式全部生成计划**（`FAILURES: none`）且 `alphaSame=True`：重算的 `formula_cache.hpp` 与仓库文件逐字节相同，内置 alpha 缓存未变。
+- **关键顺序**（紧页面路径，与运行时一致）：flight `T = [分数线] v y 0 + q v 2 y 0 + 2 g h 0 g`；aligned 两行 `a = [线] b c d = [线] e f`（两行互不认领）；`\frac{\frac{a}{b}}{c}` → `[线] [线] a b c`；`\frac{a}{\frac{b}{c}}` → `[线] a [线] b c`；`\sum_{i=1}^{n}i^2` 与 `\int_0^T` 的算子都先于上下限；`\vec v_0` → `v 箭头 0`；`\hat x` → `x 帽子`。
+- 回归修复：aligned 里上下两行、x 跨度相同的独立分式曾被 `_nests` 互认成嵌套，根集合为空后顺序退回内容流；现要求嵌套间隙 <= 2 × 最近间隙，并跑两遍"归属↔嵌套"。
+- **Release 构建完成，全量 21/21 通过，79.58 s**。日志：`build/verification/2026-09-16-formula-order-release.log`。覆盖原有功能、旧工程兼容、新运行时资源、窗口缩放/最小化/恢复/关闭和 Vulkan 校验。
+- **Debug 构建完成，针对性 5/5 通过，40.18 s**：`editor_project`、`editor_smoke`、`editor_write_entry`、`editor_write_rendering`、`editor_runtime_assets`。日志：`build/verification/2026-09-16-formula-order-debug.log`。
+- Release 与 Debug 的临近完成帧最大通道差均为 **2/255**，半程 `T` 与完成帧差均为 **1/255**。结果分别位于 `build/verification/write-render-4f474e51ee034e7a98d959bed32fa0c0` 和 `build/verification/write-render-d6ee8d5909ae405fb6226eea8a00381a`，窗口及导出 Vulkan 校验均为 0 错误、0 警告。
+- 最终演示：`build/verification/write-demo/write-demo-1789529929869521000.mp4`，ffprobe 确认 6 s、30 fps、1280×720、180 帧；配套 `write-demo.physproj` 位于同目录。导出父进程和工作进程的 Vulkan 校验均为 0/0。
+- 补上渲染器实际调用的内置计划查找测试；GPU 图像回归额外检查半程时 `T` 已完成，防止“生成表正确但渲染仍回退旧顺序”。仍保留临近完成帧最大通道差不超过 2/255 的检查。
+- 逐帧检查 `build/verification/write-acceptance/frames-1789529636624714500` 的 2.0、2.125、2.25、3.0 s 帧，确认 `T =`、分数线、分子依次出现；文字效果保持原样。
+- 已知限制：`\overbrace` 这类比内容更高的装饰会被当成主体；整式上横线与所在分子一起输出；带宽对规则线给 3.0 pt 容差；不做完整 TeX 语法解析。
+
 # Write 手写入场验收 · 2026-09-15
 
 范围：文字和 LaTeX 公式的轮廓描画、填充、纯时间求值，编辑器/MCP 共用 `set_write` 操作，历史与工程保存兼容。实现与示例位于主干。

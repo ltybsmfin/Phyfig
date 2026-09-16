@@ -1,5 +1,6 @@
 #pragma once
 #include "document.hpp"
+#include "formula_plan.hpp"
 #include <set>
 
 namespace physics_editor::formula_resources {
@@ -24,6 +25,13 @@ inline void validate(const Json& resources) {
         }
         require(count==size_t(w)*h,"Incomplete formula mask");
         if(a.contains("latex"))require(a["latex"].is_string() && a["latex"].get_ref<const std::string&>().size()<=4096,"Invalid formula source");
+        // The optional structural writing plan is validated field by field and
+        // must describe this very mask: same size, component indices that cover
+        // every ink region exactly once. Stored data is never trusted.
+        if(a.contains("writingPlan")){
+            const auto plan=formula_plan::parse(a["writingPlan"]);
+            require(plan.width==w && plan.height==h,"writingPlan does not match its formula mask");
+        }
     }
 }
 inline void scene(const Json& doc,const Json& resources){

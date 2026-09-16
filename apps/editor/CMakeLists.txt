@@ -1,5 +1,6 @@
-add_library(physics_document STATIC "${PROJECT_SOURCE_DIR}/src/editor/document.cpp" "${PROJECT_SOURCE_DIR}/src/editor/component.cpp" "${PROJECT_SOURCE_DIR}/src/editor/workspace.cpp" "${PROJECT_SOURCE_DIR}/src/editor/expression.cpp" "${PROJECT_SOURCE_DIR}/src/editor/animation.cpp" "${PROJECT_SOURCE_DIR}/src/editor/write_entry.cpp" "${PROJECT_SOURCE_DIR}/src/editor/archive.cpp" "${PROJECT_SOURCE_DIR}/src/editor/project.cpp")
+add_library(physics_document STATIC "${PROJECT_SOURCE_DIR}/src/editor/document.cpp" "${PROJECT_SOURCE_DIR}/src/editor/component.cpp" "${PROJECT_SOURCE_DIR}/src/editor/workspace.cpp" "${PROJECT_SOURCE_DIR}/src/editor/expression.cpp" "${PROJECT_SOURCE_DIR}/src/editor/animation.cpp" "${PROJECT_SOURCE_DIR}/src/editor/write_entry.cpp" "${PROJECT_SOURCE_DIR}/src/editor/formula_plan.cpp" "${PROJECT_SOURCE_DIR}/src/editor/archive.cpp" "${PROJECT_SOURCE_DIR}/src/editor/project.cpp")
 target_include_directories(physics_document PUBLIC "${PROJECT_SOURCE_DIR}/src/editor" "${PROJECT_SOURCE_DIR}/third_party/json")
+target_include_directories(physics_document PRIVATE "${PROJECT_SOURCE_DIR}/assets")
 target_compile_features(physics_document PUBLIC cxx_std_17)
 target_compile_definitions(physics_document PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 add_executable(physics_editor main.cpp editor.cpp editor_components.cpp editor_animation.cpp editor_jobs.cpp editor_write.cpp "${PROJECT_SOURCE_DIR}/src/editor/pipe.cpp" "${PROJECT_SOURCE_DIR}/src/editor/stdio_transport.cpp")

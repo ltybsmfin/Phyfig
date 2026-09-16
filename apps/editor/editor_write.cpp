@@ -3,6 +3,7 @@
 #include "editor.hpp"
 #include "font_support.hpp"
 #include "formula.hpp"
+#include "formula_plan.hpp"
 #include "write_entry.hpp"
 
 #include <algorithm>
@@ -100,6 +101,10 @@ std::shared_ptr<const FormulaGeometry> formulaGeometry(const std::string& name, 
     write_entry::UnitRequest request;
     request.mask = {alpha.data(), formula.width, formula.height};
     request.mode = write_entry::UnitMode::ComponentPerUnit;
+    // The structural writing order travels with the formula: fraction bars before
+    // their numerator and denominator, base before its scripts. buildLayout only
+    // uses it when it matches this exact mask.
+    if (const write_entry::PlanView* plan = formula_plan::find(name.c_str())) request.plan = *plan;
     auto geometry = std::make_shared<FormulaGeometry>();
     geometry->name = name;
     geometry->layout = write_entry::buildLayout({request});
@@ -324,7 +329,7 @@ void Editor::writePanel(const Json& object) {
     if (!write_entry::hasWrite(object)) {
         if (ImGui::Button("添加 Write 入场")) {
             const double duration = std::min(1.5, std::max(0.2, sceneDuration));
-            apply({{"start", 0.0}, {"duration", duration}, {"stagger", 0.35}, {"phase", 0.65},
+            apply({{"start", 0.0}, {"duration", duration}, {"stagger", object.at("type")=="formula" ? 1.0 : 0.35}, {"phase", 0.65},
                 {"outlineWidth", 1.5}, {"outline", true}, {"fill", true}, {"easing", "smooth"}});
         }
         ImGui::TextWrapped("未设置时文字/公式按原样显示。添加后沿字形轮廓逐步描绘，再淡入填充。");
