@@ -223,6 +223,10 @@ private:
         std::cerr << "Offscreen export: " << config.frames << " frames " << config.width << 'x' << config.height
                   << " -> " << options_.exportDirectory << '\n';
         for (unsigned frame = 0; frame < config.frames; ++frame) {
+            // Everything from the ImGui frame setup to the queue submit is CPU
+            // work for this frame; the exporter reports it as renderSeconds so the
+            // measured split can separate compose/record from readback and PNG.
+            const auto frameStart = std::chrono::steady_clock::now();
             // Same dynamic formula-atlas path as the interactive loop, so a
             // setCustom() issued after startup still lands before this frame.
             if (math_text::pending) rebuildFormulaAtlas();
@@ -240,11 +244,29 @@ private:
             ImGui::Render();
             recordOffscreenFrame();
             submitOffscreenFrame();
+            exporter_.noteComposeSeconds(std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - frameStart).count());
             exporter_.writeFrame(queue_, frame);
         }
         if (validationErrors)
             throw std::runtime_error("Vulkan validation reported errors during the offscreen export");
+        // Encoders run in the background: block until every queued frame is really
+        // on disk before the export announces anything, and publish the final
+        // snapshot before result.json exists. The stage stays "render" because only
+        // the caller's result.json announces a finished export.
+        exporter_.waitForPendingWrites();
+        exporter_.publishProgress(true);
         exporter_.writeResult();
+        // One machine-readable line so a benchmark can split the export without
+        // guessing from wall time: compose is CPU compose/record, wait is the queue
+        // stall, swizzle is the readback conversion and png is deflate plus write.
+        const graphics::OffscreenExportTiming timing = exporter_.timing();
+        std::cerr << "[perf] offscreen frames " << timing.completedFrames << '/' << config.frames
+                  << " memory " << exporter_.readbackMemoryKind()
+                  << " encoders " << exporter_.encoderCount()
+                  << " compose " << timing.composeSeconds << " wait " << timing.waitSeconds
+                  << " swizzle " << timing.swizzleSeconds << " png " << timing.pngSeconds
+                  << " render " << timing.renderSeconds << " elapsed " << timing.elapsedSeconds << '\n';
         std::cerr << "Offscreen export complete: " << config.frames << " frames\n";
     }
     void recordOffscreenFrame() {

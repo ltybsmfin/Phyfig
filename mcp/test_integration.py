@@ -29,7 +29,7 @@ async def verify(executable: Path):
                     listed = await session.list_tools()
                     names = {tool.name for tool in listed.tools}
                     assert {"get_scene", "get_catalog", "apply_commands", "undo", "redo", "save_scene", "load_scene", "set_playback", "replace_scene"} <= names
-                    assert {"show_editor", "get_view_state", "get_history"} <= names
+                    assert {"show_editor", "get_view_state", "get_history", "get_activity_log"} <= names
                     assert {"set_formula", "export_animation", "get_job", "cancel_job"} <= names
 
                     async def call(name, args=None, error=False):
@@ -60,6 +60,9 @@ async def verify(executable: Path):
                         {"op": "create", "id": "glyph-probe", "type": "text", "properties": {"x": 1, "y": 1, "text": "缺字探针 😀"}},
                     ]})
                     assert scene["revision"] == 1
+                    activity = await call("get_activity_log", {"limit": 100})
+                    assert any(item['method'] == 'apply' and item['source'] == 'mcp'
+                               and item['status'] == 'ok' for item in activity['entries']), activity
                     rendered = await call("get_view_state")
                     assert rendered["visible"] and not rendered["minimized"] and rendered["presentedFrames"] > 0
                     assert rendered["presentedRevision"] == scene["revision"], rendered

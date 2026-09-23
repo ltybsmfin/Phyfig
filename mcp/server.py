@@ -179,6 +179,17 @@ def get_view_state() -> dict[str, Any]:
 
 
 @mcp.tool()
+def get_activity_log(after: int = 0, limit: int = 100) -> dict[str, Any]:
+    """Read the editor's visible operation log, separate from undo history.
+
+    Lists bounded recent UI/MCP operations and failures across scene/component
+    scopes. Routine polling is omitted. Source describes the input route, not
+    authenticated identity. Read-only: does not alter history or playback.
+    """
+    return bridge.request("get_activity_log", {"after": after, "limit": limit})
+
+
+@mcp.tool()
 def get_history(after: int = 0, limit: int = 100, scope: str = "scene") -> dict[str, Any]:
     """Read shared human/MCP command history (1..100 entries per page), including rejected attempts and undo/redo links. Source identifies input route, not authenticated identity. Full session JSONL stays on disk."""
     return bridge.request("get_history", {"after": after, "limit": limit}, scope=scope)

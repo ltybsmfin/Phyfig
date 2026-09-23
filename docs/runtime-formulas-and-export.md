@@ -32,9 +32,17 @@ LaTeX 是**排版语法**，动画通道的表达式是**计算语言**：显示
 
 导出冻结当前画布、可见解题步骤和场景资源，按整个场景时长采样。后台原生进程使用独立、固定尺寸的 Vulkan 图像，窗口缩放、最小化、切换对象或继续编辑不会改变导出的快照。不输出编辑器面板、选中框；不同比例的输出尺寸会留白以保持图形比例。
 
-帧数为 `ceil(时长 × fps)`，第 i 帧在 `i/fps` 秒采样，因此输出时长与场景时长的差小于一帧。超过 3600 帧会明确拒绝，需要降低帧率或缩短场景；不会静默加速。PNG、MP4、GIF 都保持指定尺寸。场景时长在文档校验中限定为 `(0,3600]` 秒，因此不存在 0 时长的静态导出，至少输出一帧。4096×4096 的 PNG 编码在内存中约需 0.5 GB（原始像素、LZ77 链和读回缓冲），这是已知资源成本，不是缺陷。
+离屏渲染一直是在 GPU 上用 Vulkan 把每一帧画完整，本轮没有引入新的 GPU 加速，也没有改变渲染方式。分阶段计时显示，导出时间的大头在读回（GPU→CPU 拷贝）与 CPU 侧的 PNG 压缩和写盘，而不是绘制本身，所以这一轮改的是读回与编码：读回缓冲优先申请 host-cached（最好同时 coherent）内存，逐帧一次整块 `memcpy` 到缓存暂存区，颜色转换与 deflate 交给后台编码线程池，与渲染循环并行。`mcp/test_render_performance.py` 是分阶段测量工具（记录 compose / wait / swizzle / png 与逐帧哈希，用来比较优化前后是否逐像素一致），不判定性能倍数；具体倍数与最终验收数据见 [验证记录](verification.md)。
 
-主窗口显示任务状态，可取消。任务失败不会退出编辑器。输出先写目标同卷的临时位置，完整成功后提交；已有视频只有勾选覆盖后才替换。取消或异常退出可能留下专用临时目录，主场景与原目标文件保持不变。导出帧暂存于磁盘，长动画需要相应空间。
+帧数为 `ceil(时长 × fps)`，第 i 帧在 `i/fps` 秒采样，因此输出时长与场景时长的差小于一帧。超过 3600 帧会明确拒绝，需要降低帧率或缩短场景；不会静默加速。PNG、MP4、GIF 都保持指定尺寸。场景时长在文档校验中限定为 `(0,3600]` 秒，因此不存在 0 时长的静态导出，至少输出一帧。
+
+PNG 帧由后台编码线程池写出：线程数先取 `min(6, CPU 核数 − 1)`，再按一份**保守的 512 MiB 编码工作内存**预算收紧——每个编码线程按 10 个 RGBA 帧大小估算原始像素、LZ77 哈希链、压缩输出和尚未落盘的文件，另留 1 帧给渲染线程。因此分辨率越高可用线程越少，最少保留 1 个，4096×4096 会降到 1 个。512 MiB 只覆盖编码器的工作集，不含 Vulkan/驱动、字体图集与进程其他开销，超大尺寸导出仍需相应内存——这是已知资源成本，不是缺陷。
+
+导出期间主窗口（以及 MCP 的 `get_job`）显示阶段（准备 / 渲染 / 编码 / 提交 / 完成）、已完成帧数、实时进度、已用时间、实测帧率和预计剩余时间，并可随时取消。**渲染完成不等于导出完成**：进度只有在目标提交成功后才到 100%，渲染满帧但仍在编码或提交时面板会明确提示；GIF 的调色板生成与视频流编码是两个独立阶段，调色板这一遍报不出比例时界面显示“样本不足”，不用假比例充数。预计剩余时间的作用域是**当前阶段**（渲染 / 调色板 / 编码），渲染阶段的剩余时间不包含后面的编码与提交。PNG 帧只在真正写到磁盘之后才计入完成帧；进度发布是尽力而为，写不出进度文件不会让导出失败。
+
+取消会保留最后一次计数和进度，并显示“已取消”；提交前取消不会修改已有目标，已经提交的文件不会因随后取消而回滚。编辑器不再给导出设总超时，worker 仍有按帧数放宽的子进程时间预算。任务失败不会退出编辑器。输出先写目标同卷的临时位置，完整成功后提交；已有视频只有勾选覆盖后才替换。
+
+任务退出后，编辑器根据实际结果同步进度终态，避免最后一次进度文件未写成功时仍停在“编码中”。取消和异常退出会清理本任务的临时帧：先确认进程树退出，再核对启动时记录的目标、清理凭据和目录内所有权标记。归属无法确认或目录仍被外部占用时保留并通过 `get_job().cleanup` 说明原因，不扫描或清理其他目录。导出帧暂存于磁盘，长动画仍需相应空间。
 
 交互文字来自 18px 中文字体图集；导出按实际绘制的字符按需光栅化，并按请求提高字号（上限 256 px 或设备上限，超出时夹取并给出警告，不会静默退回 18 px）。启动时会探测主字体（微软雅黑）缺少的字符并为它们合并回退字体；若所有已安装字体都没有某个字符，编辑器在导出前给出缺字警告，不把“字体缺字”和“图集放不下”混为一谈。上标/下标 U+2070–U+209F（如 `m₁`/`v₂`）已纳入图集补充区并参与回退合并（R1），导出按需字形列表与设备上限对应 R2。公式来自 240dpi 栅格遮罩；几何按目标尺寸重新光栅化。大幅放大时文字和公式仍可能变软，这不是 SVG 或矢量 PDF 导出；超出 `referenceZoom` 的位图软化是固有代价（R3）。
 
@@ -42,17 +50,18 @@ LaTeX 是**排版语法**，动画通道的表达式是**计算语言**：显示
 
 - `set_formula(id, latex, expected_revision, scope, x, y, python)`：异步编译并创建或替换公式图元。
 - `export_animation(output, expected_revision, scope, format, width, height, view_mode, fps, overwrite, python, ffmpeg)`：后台导出目标作用域的冻结画布。`view_mode=current`（默认）复现该作用域最近记录的构图，宽高同时为 0 表示匹配该画布，其他偶数尺寸按留白缩放；`view_mode=fit` 用请求的偶数尺寸为该作用域独立取景，不读取窗口或当前画布，因此必须显式给出宽高。匹配画布时奇数尺寸向下取整为偶数（MP4/GIF 的 yuv420p 需要），超出上限则拒绝而不是缩放到 4096；另一个作用域的布局不会被借用。视图缩放、平移与布局本身不使工程变脏。
-- `get_job(kind="formula"|"export")`：读取最近任务的 ID、running/completed/failed/cancelled 状态及结果。
-- `cancel_job(kind, id)`：仅取消 ID 匹配的任务。
+- `get_job(kind="formula"|"export")`：读取最近任务的 ID、running/completed/failed/cancelled 状态及结果；导出任务还带 `progress`（`version`、`stage`、`phase`、`completedFrames`/`totalFrames`、`phaseFraction`、`overallFraction`、`elapsedSeconds`、`fps`、`estimatedRemainingSeconds` 与 `estimateScope`），阶段与计数只增不减。
+- `cancel_job(kind, id)`：仅取消 ID 匹配的任务；取消后任务保留最后一次进度样本与 `cancelled` 终态。提交前取消不修改已有目标；已提交的输出不回滚。
 
 同类任务一次只运行一个；两个类别可独立运行。查询任务不修改文档历史。资源名与源文本可从 `get_catalog` 发现，新增资产不要求修改 MCP 服务器。跨项目同名且内容不同的资源会被拒绝，不会悄悄替换旧图。
 
 ## 验证入口
 
-正常工程继续使用 checked-in `vs2022` 生成器与 MSVC x64（Debug 走 `build/vs2022`）。需要运行真实公式/导出测试时，配置 `PHYSICS_FORMULA_PYTHON` 为已安装依赖的解释器路径；此值只进入本机 CMake 缓存，不提交安装路径。本轮 Release 用同一生成器的独立目录 `build/verify-runtime` 构建，以免重建并关闭正在使用的 `build/vs2022` Release 窗口：
+正常工程使用 checked-in `vs2022` 生成器与 MSVC x64，Debug / Release 均在 `build/vs2022` 构建。需要运行真实公式/导出测试时，配置 `PHYSICS_FORMULA_PYTHON` 为已安装依赖的解释器路径；此值只进入本机 CMake 缓存，不提交安装路径。保存并关闭正在使用的编辑器后，通过正式入口构建、验证：
 
 ```powershell
-ctest --test-dir build/verify-runtime -C Release -R "editor_mcp|editor_formula_worker|editor_runtime_assets" --output-on-failure
+cmake --build --preset release
+ctest --test-dir build/vs2022 -C Release --output-on-failure
 ```
 
-`editor_formula_worker` 验证受限公式、真实完整排版和导出事务；`editor_runtime_assets` 通过隔离原生窗口验证公式撤销、并发冲突、工程重开、三种输出、尺寸/时长、窗口变化、缺失编码器和取消。`editor_background_job` 验证参数引用与进程树退出；`platform_png_writer` 验证 PNG 完整解码与压缩码表边界。最新 Release 三项结果、产物路径与范围限制见 [验证记录](verification.md)。
+`editor_formula_worker` 验证受限公式、真实完整排版和导出事务；`editor_runtime_assets` 通过隔离原生窗口验证公式撤销、并发冲突、工程重开、三种输出、尺寸/时长、窗口变化、缺失编码器和取消。`editor_background_job` 验证参数引用、进度文件容错（缺失/损坏/超限/类型错误/只增不减）、终态同步、进程树退出和临时目录归属检查；`platform_png_writer` 验证 PNG 完整解码与压缩码表边界。操作日志与导出进度的现场验收脚本是 `mcp/test_activity_log.py` 与 `mcp/test_export_progress.py`，已纳入 CTest；`editor_offscreen_failure` 检查实际写帧失败与退出行为。`mcp/test_render_performance.py` 只做分阶段测量与逐帧对比。最新配置、结果、产物路径与范围限制见 [验证记录](verification.md)。

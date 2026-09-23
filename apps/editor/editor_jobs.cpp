@@ -7,6 +7,7 @@
 #include "runtime_paths.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <cstring>
 
@@ -61,6 +62,105 @@ std::wstring executablePath(const std::string& name){
     require(size>0 && size<32768,"Cannot find selected Python executable");return resolved;
 }
 bool exists(const Document& doc,const std::string& id){for(const auto& o:doc.scene()["objects"])if(o["id"]==id)return true;return false;}
+// --- live background-job progress ------------------------------------------
+// The worker publishes <job folder>/progress.json (stage, frames, elapsed,
+// fps, estimate, overallFraction); BackgroundJob throttles reading it into
+// state["progress"]. The panel below is drawn on every frame, so it stays
+// visible while the export dialog is closed and for MCP-triggered jobs too.
+const char* progressStageLabel(const std::string& stage){
+    if(stage=="prepare")return "准备";
+    if(stage=="render")return "渲染";
+    if(stage=="encode")return "编码";
+    if(stage=="commit")return "提交";
+    if(stage=="done")return "完成";
+    if(stage=="failed")return "失败";
+    if(stage=="cancelled")return "已取消";
+    return "进行中";
+}
+const char* progressPhaseLabel(const std::string& phase){
+    if(phase=="palettegen")return "调色板";
+    if(phase=="encode")return "视频流";
+    if(phase=="render")return "渲染";
+    return "";
+}
+std::string formatSeconds(double seconds){
+    char buffer[64]{};
+    if(seconds<60.)std::snprintf(buffer,sizeof(buffer),"%.1f 秒",seconds);
+    else if(seconds<3600.)std::snprintf(buffer,sizeof(buffer),"%d 分 %02d 秒",static_cast<int>(seconds/60.),static_cast<int>(std::fmod(seconds,60.)));
+    else std::snprintf(buffer,sizeof(buffer),"%d 时 %02d 分",static_cast<int>(seconds/3600.),static_cast<int>(std::fmod(seconds/60.,60.)));
+    return buffer;
+}
+// Typed accessors: the panel must never throw on a field a worker published with
+// an unexpected type, because it draws on the UI thread.
+double jobNumber(const Json& object,const char* key,double fallback){
+    return object.contains(key) && object[key].is_number()?object[key].get<double>():fallback;
+}
+bool jobHasNumber(const Json& object,const char* key){
+    return object.contains(key) && object[key].is_number();
+}
+std::string jobText(const Json& object,const char* key){
+    return object.contains(key) && object[key].is_string()?object[key].get<std::string>():std::string();
+}
+unsigned long long jobCount(const Json& object,const char* key){
+    return object.contains(key) && object[key].is_number_unsigned()?object[key].get<unsigned long long>():0ULL;
+}
+// Progress bar plus stage, frames, elapsed/estimate and throughput. The bar only
+// reaches 100% when the worker published stage "done": a fully rendered export
+// that is still encoding or committing stays below 100% on purpose.
+//
+// 版式约定：日志栏只有 240~340 px 宽，**每一项都必须单独成行并按栏宽换行**。
+// 以前这里用 SameLine 横向排开「预计剩余 / 帧率 / 渲染耗时」，在真实截图里被栏右
+// 边缘整段裁掉，只剩半截数字。
+void jobProgressUi(const BackgroundJob& job){
+    if(!job.state.contains("progress") || !job.state["progress"].is_object()){
+        ImGui::TextDisabled("等待渲染器发布进度…（进度发布失败不影响导出）");return;
+    }
+    const auto& progress=job.state["progress"];
+    const std::string stage=jobText(progress,"stage"),phase=jobText(progress,"phase");
+    const std::string message=jobText(progress,"message");
+    const double overall=std::clamp(jobNumber(progress,"overallFraction",0.),0.,1.);
+    const unsigned long long completed=jobCount(progress,"completedFrames"),total=jobCount(progress,"totalFrames");
+    // 完成/失败/取消之后 worker 可能还在收尾，进程仍然 running。此时 fps 与剩余时间
+    // 都是过期样本：界面绝不能一边说「已完成/已取消/失败」一边继续跳实时帧率。
+    const bool finished=stage=="done",stopped=stage=="failed"||stage=="cancelled";
+    const bool live=!finished && !stopped;
+    char overlay[160]{};
+    if(total>0) std::snprintf(overlay,sizeof(overlay),"%s %llu/%llu · %.1f%%",progressStageLabel(stage),completed,total,overall*100.);
+    else std::snprintf(overlay,sizeof(overlay),"%s · %.1f%%",progressStageLabel(stage),overall*100.);
+    const ImVec4 barColor=finished?ImVec4{.30f,.72f,.45f,1}
+                          :stopped?ImVec4{1.f,.50f,.30f,1}
+                          :ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogram);
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram,barColor);
+    ImGui::ProgressBar(static_cast<float>(overall),ImVec2(-1,0),overlay);
+    ImGui::PopStyleColor();
+    std::string label=progressStageLabel(stage);
+    if(!phase.empty() && phase!=stage && progressPhaseLabel(phase)[0])
+        label+="（"+std::string(progressPhaseLabel(phase))+"）";
+    ImGui::TextWrapped("阶段 %s · 已用 %s",label.c_str(),formatSeconds(jobNumber(progress,"elapsedSeconds",0.)).c_str());
+    if(!live) {
+        ImGui::TextWrapped(finished?"实时帧率与预计剩余已停止更新：本阶段已结束"
+                                   :"实时帧率与预计剩余已停止更新：任务已结束");
+    } else {
+        // 「本阶段预计剩余」只说当前这一段：整个导出还要加上后面的编码与提交，
+        // 不能让它读起来像整个任务的剩余时间。
+        if(jobHasNumber(progress,"estimatedRemainingSeconds"))
+            ImGui::TextWrapped("本阶段预计剩余 %s（不含之后的编码/提交）",
+                formatSeconds(jobNumber(progress,"estimatedRemainingSeconds",0.)).c_str());
+        else ImGui::TextWrapped("本阶段预计剩余：样本不足，暂时无法估计");
+        if(jobHasNumber(progress,"fps")) ImGui::TextWrapped("渲染吞吐 %.1f 帧/秒",jobNumber(progress,"fps",0.));
+        if(jobHasNumber(progress,"renderSeconds"))
+            ImGui::TextWrapped("渲染阶段已耗时 %s",formatSeconds(jobNumber(progress,"renderSeconds",0.)).c_str());
+    }
+    // 失败/取消的原因必须能读完：这是用户唯一能看到 worker 原话的地方。
+    if(!live && !message.empty()) ImGui::TextWrapped("原因：%s",message.c_str());
+    // Rendering can be complete long before the export is: say so explicitly
+    // instead of letting a full frame bar look like a finished export.
+    if(total>0 && completed>=total && live && stage!="commit") {
+        ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1.f,.75f,.2f,1));
+        ImGui::TextWrapped("渲染帧已全部完成，导出尚未提交（后面还有编码/提交），请不要关闭编辑器");
+        ImGui::PopStyleColor();
+    }
+}
 }
 void Editor::syncFormulaResources(){
     formula_resources::validate(workspace_.resources());
@@ -163,13 +263,44 @@ Json Editor::jobRequest(const Json& request,const std::string& source){
         {"fps",fps},{"frames",frames},{"duration",duration},{"viewMode",viewMode},
         {"ffmpeg",args.value("ffmpeg",std::string(ffmpegPath_))},{"overwrite",args.value("overwrite",false)},{"validation",args.value("validation",false)}};
     writeJson(folder/L"request.json",input);
-    exportJob_.start({executablePath(python),script.wstring(),L"--input",(folder/L"request.json").wstring(),L"--output",(folder/L"result.json").wstring()},folder,1800);
+    // 导出没有超时：一个 2K 长片的渲染时间是分钟级的，1800 s 会把正常的长导出判死
+    // （BackgroundJob 约定 timeoutSeconds == 0 表示不设超时，取消按钮仍然有效）。
+    exportJob_.start({executablePath(python),script.wstring(),L"--input",(folder/L"request.json").wstring(),L"--output",(folder/L"result.json").wstring()},folder,0);
+    // 终态记录必须保留请求的发起方与作用范围：它们不在 BackgroundJob::state 里，
+    // 而 state 只有 id/尺寸等运行信息。
+    exportSource_=source;exportScope_=scope;
     exportJob_.state["id"]=folder.filename().u8string();exportJob_.state["frames"]=frames;exportJob_.state["output"]=input["output"];
     exportJob_.state["width"]=width;exportJob_.state["height"]=height;exportJob_.state["viewMode"]=viewMode;
     exportJob_.state["viewport"]={{"mode",viewMode},{"scope",scope},{"canvasWidth",view.width},{"canvasHeight",view.height},
         {"zoom",view.zoom},{"referenceZoom",view.referenceZoom>0?view.referenceZoom:view.zoom},
         {"origin",{view.origin.x,view.origin.y}},{"pan",{view.pan.x,view.pan.y}}};
     return exportJob_.state;
+}
+void Editor::reportJobOutcome(const char* kind,BackgroundJob& job,const std::string& source,
+                              const std::string& scope,std::string& reported) {
+    const std::string status=job.state.value("status",std::string());
+    // 只有真正的终态才算结束：idle/running 都不是，而且 cancel() 之后 running() 已经
+    // 变成 false，所以这里不能只看 poll() 的返回值。
+    if(job.running() || !ActivityLog::isTerminalJobStatus(status)) return;
+    const std::string key=ActivityLog::jobReportKey(job.state.value("id",std::string()),status);
+    if(key==reported) return;   // 同一次运行只上报一次（state["id"] 每次 start() 都会换新）
+    reported=key;
+    const std::string error=job.state.contains("error") && job.state["error"].is_string()
+        ?job.state["error"].get<std::string>():std::string();
+    JobOutcome outcome;
+    outcome.kind=kind;
+    outcome.scope=scope.empty()?std::string("-"):scope;
+    outcome.source=source.empty()?std::string("job"):source;
+    outcome.status=status;
+    outcome.error=error;
+    outcome.jobId=job.state.value("id",std::string());
+    // 请求本身已经由 dispatch() 记录过一次；这里只追加**独立**的终态记录
+    // （startedId==0），既不回填也不重复记录请求。
+    outcome.startedId=0;
+    if(status=="completed") outcome.summary=std::string(kind)+" 任务完成";
+    else if(status=="cancelled") outcome.summary=std::string(kind)+" 任务已取消";
+    else outcome.summary=std::string(kind)+" 任务失败";
+    recordActivityJob(outcome);
 }
 void Editor::pollJobs(){
     if(formulaJob_.poll()){
@@ -222,6 +353,12 @@ void Editor::pollJobs(){
                 if(exportJob_.state["result"].contains(key)) exportJob_.state[key]=exportJob_.state["result"][key];
         status_=exportJob_.state["status"]=="completed"?"导出完成："+exportJob_.state.value("output",std::string()):"导出失败："+exportJob_.state.value("error",std::string());
     }
+    // 异步任务的终态记录（完成/失败/取消）。取消会让 running() 立刻变成 false，
+    // poll() 因此不会再返回 true，所以这里每帧无条件检查终态；去重靠每次 start()
+    // 都会更换的 state["id"]。记录**独立追加**，不改写发起时那条请求记录，也不会
+    // 把请求再记一遍。
+    reportJobOutcome("formula",formulaJob_,formulaSource_,formulaScope_,formulaJobReported_);
+    reportJobOutcome("export",exportJob_,exportSource_,exportScope_,exportJobReported_);
 }
 void Editor::formulaPanel(const Json& object){
     const auto editKey=scope_+":"+object["id"].get<std::string>()+":"+object["properties"]["formula"].get<std::string>();
@@ -246,11 +383,107 @@ void Editor::formulaPanel(const Json& object){
         ImGui::EndDisabled();ImGui::TextWrapped("输入数学 LaTeX（不带外层 $），如 \\frac{1}{2}mv^2。需要 MiKTeX、Pillow、pypdfium2。");
     }
 }
+// 后台任务正文：日志栏内与兜底浮层共用同一份绘制，两处显示必然一致。
 void Editor::jobsPanel(){
-    for(auto entry:{std::pair<const char*,BackgroundJob*>{"formula",&formulaJob_},{"export",&exportJob_}})if(entry.second->running()){
-        ImGui::TextUnformatted(entry.first==std::string("formula")?"正在编译公式…":"正在导出动画…");ImGui::SameLine();
-        ImGui::PushID(entry.first);if(ImGui::SmallButton("取消任务"))attempt({{"method","cancel_job"},{"args",{{"kind",entry.first},{"id",entry.second->state["id"]}}}});ImGui::PopID();
+    bool first=true;
+    for(auto entry:{std::pair<const char*,BackgroundJob*>{"formula",&formulaJob_},{"export",&exportJob_}}){
+        BackgroundJob& job=*entry.second;
+        if(!job.running())continue;
+        if(!first)ImGui::Separator();
+        first=false;
+        const bool isExport=std::string(entry.first)=="export";
+        const char* title=isExport?"正在导出动画…":"正在编译公式…";
+        ImGui::TextUnformatted(title);
+        // 取消任务是它唯一的出口：栏太窄放不下「标题 + 按钮」时换行，绝不横向裁掉。
+        const float buttonWidth=ImGui::CalcTextSize("取消任务").x+ImGui::GetStyle().FramePadding.x*2.f;
+        if(ImGui::CalcTextSize(title).x+ImGui::GetStyle().ItemSpacing.x+buttonWidth<=ImGui::GetContentRegionAvail().x)
+            ImGui::SameLine();
+        ImGui::PushID(entry.first);
+        if(ImGui::Button("取消任务")){
+            const std::string id=job.state.value("id",std::string());
+            attempt({{"method","cancel_job"},{"args",{{"kind",entry.first},{"id",id}}}});
+            // The last published progress is kept and said out loud here as well;
+            // pollJobs() additionally appends the terminal record on the next frame.
+            const bool cancelled=job.state.value("status",std::string())=="cancelled";
+            const std::string failure=job.state.contains("error") && job.state["error"].is_string()
+                ?job.state["error"].get<std::string>():std::string("取消失败");
+            if(cancelled)status_=isExport?"导出已取消 · 保留最后进度，未提交的目标不会被修改":"公式编译已取消";
+            else status_=failure;
+        }
+        ImGui::PopID();
+        // A job that publishes no progress (the formula compiler) shows only the
+        // line above, exactly as before.
+        if(isExport || job.state.contains("progress"))jobProgressUi(job);
     }
+}
+// 日志栏被收起（F9）、只剩按钮条或整栏让位时的兜底进度浮层。
+// 以前这里是在主布局流的末尾直接调 jobsPanel()：画布高度已经吃满剩余空间，那几行
+// 会被状态行和播放控件挤出窗口底部（真实截图里进度就这样丢了）。浮层固定锚在画布列
+// 左上角，任何窗口尺寸下都真的在屏幕内，进度与「取消任务」始终可见可点。
+//
+// 两个理由决定了它是**主窗口的子窗口**而不是独立顶层窗口：
+//   * z 序：ImGui 每帧结束会把子窗口紧跟父窗口之后排序，所以子窗口永远画在主窗口
+//     内容之上；而独立顶层窗口一旦主窗口被重新聚焦（点一下画布就会）就会被提到最前，
+//     把浮层整个盖掉。子窗口同时仍排在导出对话框这类弹出窗口之下，不会挡住模态框。
+//   * 不「预留高度」：画布高度参与文字/公式的像素基准拟合（fitCanvas 用 size.y 求
+//     缩放），也参与已记录的导出取景；为一个只在任务运行期间出现的面板改动画布尺寸，
+//     会让同一份文档因为「有没有任务在跑」得出不同的 referenceZoom / 导出像素。
+//     子窗口按屏幕坐标定位、不参与主布局的列宽与行高计算，因此基准与离屏绘制不变。
+void Editor::jobsFallbackOverlay(ImVec2 anchor,float width){
+    if(!anyJobRunning()) return;
+    const ImGuiViewport* viewport=ImGui::GetMainViewport();
+    const float available=std::max(120.f,viewport->WorkSize.x-24.f);
+    const float overlayWidth=std::clamp(width-16.f,120.f,std::min(520.f,available));
+    const float minX=viewport->WorkPos.x+8.f;
+    const float maxX=std::max(minX,viewport->WorkPos.x+viewport->WorkSize.x-8.f-overlayWidth);
+    const float x=std::clamp(anchor.x+8.f,minX,maxX);
+    const float y=std::max(anchor.y+8.f,viewport->WorkPos.y+8.f);
+    const float titleWidth=ImGui::CalcTextSize("后台任务进度").x;
+    const float buttonWidth=ImGui::CalcTextSize("展开日志").x+ImGui::GetStyle().FramePadding.x*2.f;
+    const ImVec2 savedCursor=ImGui::GetCursorScreenPos();
+    ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4{.17f,.18f,.21f,.98f});
+    ImGui::SetCursorScreenPos({x,y});
+    ImGui::BeginChild("##jobs-progress-overlay",{overlayWidth,0.f},
+        ImGuiChildFlags_Borders|ImGuiChildFlags_AutoResizeY);
+    // ImGui may put a child decoration into the parent's draw list. That
+    // background would be behind the sibling canvas. Draw the opaque surface
+    // in this child's own list so its text stays readable over the diagram.
+    const ImVec2 panelPos=ImGui::GetWindowPos(),panelSize=ImGui::GetWindowSize();
+    auto* panelDraw=ImGui::GetWindowDrawList();
+    panelDraw->PushClipRect(panelPos,{panelPos.x+panelSize.x,panelPos.y+panelSize.y},false);
+    panelDraw->AddRectFilled(panelPos,{panelPos.x+panelSize.x,panelPos.y+panelSize.y},IM_COL32(43,46,54,255));
+    panelDraw->PopClipRect();
+    ImGui::TextUnformatted("后台任务进度");
+    if(titleWidth+ImGui::GetStyle().ItemSpacing.x+buttonWidth<=ImGui::GetContentRegionAvail().x) ImGui::SameLine();
+    if(ImGui::SmallButton("展开日志")) activityOpen_=true;
+    if(ImGui::IsItemHovered()) ImGui::SetTooltip("重新展开右侧操作日志栏（F9）");
+    ImGui::TextWrapped("操作日志栏已收起，进度固定显示在这里");
+    jobsPanel();
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::SetCursorScreenPos(savedCursor);
+}
+bool Editor::anyJobRunning() const { return formulaJob_.running()||exportJob_.running(); }
+// 只读诊断快照：进度面板画在哪里、有没有任务在跑、发布了什么阶段。它只报告已经
+// 画出来（或将要画）的状态，从不改动任务本身。
+Json Editor::jobSnapshot() const {
+    auto describe=[](const BackgroundJob& job){
+        Json out={{"running",job.running()},{"id",job.state.value("id",std::string())},
+                  {"status",job.state.value("status",std::string())},{"progress",nullptr}};
+        if(job.state.contains("progress") && job.state["progress"].is_object()){
+            const auto& progress=job.state["progress"];
+            out["progress"]={{"stage",jobText(progress,"stage")},
+                {"completedFrames",jobCount(progress,"completedFrames")},
+                {"totalFrames",jobCount(progress,"totalFrames")},
+                {"overallFraction",jobNumber(progress,"overallFraction",0.)},
+                {"estimatedRemainingSeconds",jobHasNumber(progress,"estimatedRemainingSeconds")
+                    ?Json(jobNumber(progress,"estimatedRemainingSeconds",0.)):Json(nullptr)}};
+        }
+        return out;
+    };
+    return {{"formula",describe(formulaJob_)},{"export",describe(exportJob_)},
+        {"surface",jobsSurface_},{"overlayVisible",jobsSurface_=="overlay"},
+        {"panelVisible",jobsSurface_!="none"},{"running",anyJobRunning()}};
 }
 void Editor::exportDialog(){
     if(exportDialogOpen_){ImGui::OpenPopup("导出动画");exportDialogOpen_=false;}

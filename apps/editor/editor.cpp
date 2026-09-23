@@ -66,14 +66,94 @@ std::string encodeUtf8(uint32_t cp) {
     else { out.push_back(char(0xF0|(cp>>18))); out.push_back(char(0x80|((cp>>12)&0x3F))); out.push_back(char(0x80|((cp>>6)&0x3F))); out.push_back(char(0x80|(cp&0x3F))); }
     return out;
 }
+// 操作日志的展示辅助：查询/普通/失败三态着色，与底部撤销历史刻意区分。
+const char* activityStatusText(const ActivityItem& item) {
+    if(item.status=="error") return "失败";
+    if(item.status=="warning") return "警告";
+    return item.query?"查询":"成功";
+}
+ImVec4 activityStatusColor(const ActivityItem& item) {
+    if(item.status=="error") return {1.f,.45f,.35f,1};
+    if(item.status=="warning") return {1.f,.72f,.28f,1};
+    return item.query?ImVec4{.62f,.66f,.70f,1}:ImVec4{.55f,.82f,.55f,1};
+}
+// 人类/AI 用同一套元操作名，界面只加中文标签，日志里始终保留方法名本身。
+const char* activitySourceLabel(const std::string& source) {
+    return source=="mcp"?"MCP":source=="human"?"界面":source=="system"?"系统":source=="job"?"任务":"?";
+}
+const char* activityScopeLabel(const std::string& scope) {
+    return scope=="scene"?"主场景":scope=="component"?"组件":scope=="-"?"-":"?";
+}
+// close_component 永远回到主场景，不能沿用请求里的 scope。
+std::string activityResolvedScope(const std::string& method,const std::string& scope) {
+    if(method=="close_component") return "scene";
+    return scope;
+}
+// 左栏拖动范围与 storeLayout/applyLayout 使用同一组上下限，避免只有拖动路径收窄。
+float activityClampSidebar(float value) { return std::clamp(value,140.f,700.f); }
 }
 Editor::Editor() {
     initializeRenderers();
     Json masks=Json::array(); for(const auto& e:formula_cache::entries) masks.push_back({{"name",e.name},{"width",e.width},{"height",e.height},{"rle",std::vector<unsigned char>(e.rle,e.rle+e.bytes)}});
     workspace_.setResources({{"formulaMasks",masks},{"formulaScale",formula_cache::displayScale}});
     workspace_.validateFormulas();referenceZoom_=zoom_;
-
+    activityLastId_=activityLog_.lastId();
 }
+// ---------------------------------------------------------------------------
+// 操作日志：写入。UI 与 MCP 都经由 dispatch 进入，因此两边记录完全同构。
+// ---------------------------------------------------------------------------
+void Editor::recordActivityLine(const Json& request,const std::string& source,bool ok,
+                                const std::string& error,const std::string& scope) {
+    const std::string method=request.value("method",std::string("invalid"));
+    // 轮询类只读请求成功时静默：否则 get_scene/get_job 轮询会瞬间刷满有界日志。
+    // 它们一旦失败仍然可见（isQueryMethod 只影响成功态）。
+    if(ok && ActivityLog::isQueryMethod(method)) return;
+    // get_activity_log 永远不记录自己：否则「查看日志」本身就会改变日志。
+    if(method=="get_activity_log") return;
+    const std::string resolved=scope.empty()?request.value("scope",std::string("-")):scope;
+    // journalWarning 属于「操作成功但会话日志写盘失败」：保留为独立的 warning 状态，
+    // 这样「失败」筛选不会把它和真正的拒绝混为一谈，也不会被静默吞掉。
+    const std::string state=(ok && !error.empty())?"warning":(ok?"ok":"error");
+    const std::string summary=ActivityLog::describeRequest(request);
+    activityLog_.recordRequestDetailed(request,source,state,error,summary,resolved);
+}
+uint64_t Editor::recordActivity(const std::string& method,const std::string& scope,const std::string& source,
+                                bool ok,const std::string& summary,const std::string& error,const Json& detail) {
+    return activityLog_.record(method,scope,source,ok,summary,error,detail);
+}
+uint64_t Editor::recordActivityJob(const JobOutcome& outcome) {
+    return activityLog_.recordJob(outcome.kind,outcome.jobId,outcome.scope,outcome.source,
+        outcome.status,outcome.error,outcome.summary,outcome.startedId);
+}
+void Editor::storeActivityState() {
+    auto& layout=workspace_.layout();
+    layout["activityOpen"]=activityOpen_;layout["activityWidth"]=activityWidth_;
+    layout["activityFollow"]=activityFollow_;layout["activityShowUi"]=activityShowUi_;
+    layout["activityShowMcp"]=activityShowMcp_;layout["activityShowFailed"]=activityShowFailed_;
+    layout["activityShowQuiet"]=activityShowQuiet_;
+}
+void Editor::applyActivityState(const Json& layout) {
+    activityOpen_=layout.value("activityOpen",true);
+    activityWidth_=std::clamp(layout.value("activityWidth",340.f),240.f,700.f);
+    activityFollow_=layout.value("activityFollow",true);
+    activityShowUi_=layout.value("activityShowUi",true);
+    activityShowMcp_=layout.value("activityShowMcp",true);
+    activityShowFailed_=layout.value("activityShowFailed",true);
+    activityShowQuiet_=layout.value("activityShowQuiet",false);
+}
+// 冒烟测试的即时快照（不经过 dispatch，因此查询本身不会入日志）。
+Json Editor::activitySnapshot() const {
+    Json methods=Json::array();
+    for(const auto& item:activityLog_.items()) methods.push_back(item.method);
+    Json result=activityLog_.query(0,ActivityLog::kCapacity);
+    result["sidebar"]={{"open",activityOpen_},{"visible",activityVisible_},{"collapsedBar",activityCollapsedBar_},
+        {"following",activityFollowing_},{"follow",activityFollow_},{"width",activityWidth_}};
+    // 后台任务进度面板本帧画在哪里（日志栏内 / 兜底浮层 / 没画），供冒烟与验证查询。
+    result["jobs"]=jobSnapshot();
+    result["methods"]=methods;
+    return result;
+}
+
 ImVec2 Editor::screen(double x,double y) const { return {origin_.x+static_cast<float>(x)*zoom_,origin_.y-static_cast<float>(y)*zoom_}; }
 ImVec2 Editor::world(ImVec2 p) const { return {(p.x-origin_.x)/zoom_,(origin_.y-p.y)/zoom_}; }
 // Pixel-sized primitives (text "size", formula "scale") are multiplied by this
@@ -380,19 +460,82 @@ void Editor::configureExportFonts(graphics::Options& options) {
 }
 Json Editor::dispatch(const Json& request,const std::string& source) {
     const std::string method=request.at("method");
+    // 只读查询：返回最近的操作日志，以及侧栏当前的可见/跟随状态。
+    // 人类与 MCP 走同一入口，MCP 用 after 游标 bounded 拉取即可。
+    if(method=="get_activity_log") {
+        const auto args=request.value("args",Json::object());
+        uint64_t after=0; size_t limit=100;
+        if(args.contains("after")) {
+            if(!args["after"].is_number_unsigned() && !(args["after"].is_number_integer() && args["after"].get<long long>()>=0))
+                throw std::runtime_error("after must be a non-negative integer");
+            after=args["after"].get<uint64_t>();
+        }
+        if(args.contains("limit")) {
+            if(!args["limit"].is_number_integer() || args["limit"].get<long long>()<1 || args["limit"].get<long long>()>500)
+                throw std::runtime_error("limit must be an integer from 1 to 500");
+            limit=args["limit"].get<size_t>();
+        }
+        Json result=activityLog_.query(after,limit);
+        // 查询与界面使用同一套筛选语义：MCP 看到的「可见记录」就是用户在侧栏里
+        // 看到的那一批（默认静默的只读查询同样不会出现在结果里，失败除外）。
+        Json visible=Json::array();
+        uint64_t windowCursor=result.value("nextAfter",after);
+        uint64_t filteredCursor=0;
+        for(const auto& entry:result["entries"]) {
+            const std::string itemSource=entry.value("source",std::string());
+            const std::string itemStatus=entry.value("status",std::string());
+            const bool showSource=itemSource=="mcp"||itemSource=="job"?activityShowMcp_:activityShowUi_;
+            const bool failed=itemStatus=="error"||itemStatus=="warning";
+            if(!showSource || (failed && !activityShowFailed_)) continue;
+            if(entry.value("query",false) && !failed && !activityShowQuiet_) continue;
+            visible.push_back(entry);
+            filteredCursor=entry.value("id",uint64_t(0));
+        }
+        result["entries"]=visible;
+        result["count"]=visible.size();
+        result["nextAfter"]=visible.empty()?windowCursor:filteredCursor;
+        result["sidebar"]={{"open",activityOpen_},{"visible",activityVisible_},{"collapsedBar",activityCollapsedBar_},
+            {"following",activityFollowing_},{"follow",activityFollow_},{"width",activityWidth_},
+            {"filters",{{"ui",activityShowUi_},{"mcp",activityShowMcp_},{"failed",activityShowFailed_},{"quiet",activityShowQuiet_}}},
+            // 底部「编辑历史」是另一个面板；两者独立，不能互相替代。
+            {"independentOfHistory",true}};
+        // 日志栏收起时后台任务进度改画在固定浮层里：这个字段让验证能断言「进度与
+        // 取消按钮真的在可见面板上」，而不是只看有没有任务在跑。
+        result["jobs"]=jobSnapshot();
+        return result;
+    }
     if(method=="get_view_state") { refreshTextWarnings(); return viewState_; }
-    if(method=="set_formula" || method=="export_animation" || method=="get_job" || method=="cancel_job")return jobRequest(request,source);
+    if(method=="set_formula" || method=="export_animation" || method=="get_job" || method=="cancel_job") {
+        try {
+            auto result=jobRequest(request,source);
+            recordActivityLine(request,source,true,std::string(),std::string());
+            return result;
+        } catch(const std::exception& e) {
+            recordActivityLine(request,source,false,e.what(),std::string());
+            throw;
+        }
+    }
     if(method=="show_editor") { showRequested_=true; return {{"showRequested",true}}; }
     if(source=="mcp" && followMcp_ && (method=="apply" || method=="replace" || method=="load" || method=="undo" || method=="redo" || method=="playback")) showRequested_=true;
     // Formula assets are part of this renderer's capabilities. Core remains GPU/TeX independent.
-    if(request.at("method")=="get_formulas") {
+    if(method=="get_formulas") {
         Json result=Json::array(),latex=Json::object();
         for(const auto& e:workspace_.resources()["formulaMasks"]){result.push_back(e["name"]);if(e.contains("latex"))latex[e["name"].get<std::string>()]=e["latex"];}
         return {{"assets",result},{"latex",latex},{"note","Built-in and portable runtime LaTeX assets; use set_formula, then poll get_job."}};
     }
-    auto result=workspace_.dispatch(request,source);
+    Json result;
+    try {
+        result=workspace_.dispatch(request,source);
+    } catch(const std::exception& e) {
+        // 被拒绝的操作也必须出现在日志里：失败往往比成功更值得追查。
+        recordActivityLine(request,source,false,e.what(),activityResolvedScope(method,scope_));
+        throw;
+    }
     if(method=="get_history" || method=="get_scene" || method=="get_catalog" || method=="get_timeline" || method=="get_project" || method=="sample_animation") return result;
-    if(method=="load_project") { syncFormulaResources();applyLayout(); fitRequested_=false; lastCanvasSize_={}; }
+    if(method=="load_project") { syncFormulaResources();applyLayout(); fitRequested_=false; lastCanvasSize_={};
+        // 操作日志是「本会话」记录，不属于工程：打开另一个工程时清空，避免把
+        // 上一个工程的旧操作误读成当前工程发生过的事。
+        activityLog_.clear(); activityAfter_=0; activityLastId_=0; activityNewestSeen_=0; }
     if(method=="load_project"){++workspaceGeneration_;++componentGeneration_;}
     if(method=="open_component" || method=="close_component")++componentGeneration_;
     if(method=="save_project" || method=="load_project") strcpy_s(projectPath_,request["args"]["path"].get_ref<const std::string&>().c_str());
@@ -415,10 +558,25 @@ Json Editor::dispatch(const Json& request,const std::string& source) {
         if(path.size()<sizeof(path_)) { strcpy_s(target=="scene"?scenePath_:componentPath_,sizeof(path_),path.c_str()); if(scope_==target) strcpy_s(path_,path.c_str()); }
     }
     status_="完成："+method+" · 修订 "+std::to_string(active().revision());
-    if(!active().journalError().empty()) status_+=" · "+active().journalError();
+    const bool journalError=!active().journalError().empty();
+    if(journalError) status_+=" · "+active().journalError();
+    recordActivityLine(request,source,true,journalError?active().journalError():std::string(),
+        activityResolvedScope(method,target));
     return result;
 }
-void Editor::attempt(const Json& request) { try { auto scoped=request; if(!scoped.contains("scope")) scoped["scope"]=scope_; dispatch(scoped); } catch(const std::exception& e) { status_=std::string("操作失败：")+e.what(); } }
+void Editor::attempt(const Json& request) {
+    auto scoped=request; if(!scoped.contains("scope")) scoped["scope"]=scope_;
+    // dispatch() 已经在原地记录了成败；这里只兜住「请求还没进入 dispatch 就校验失败」
+    // 的入口错误（例如请求缺少 method 字段），避免失败被静默吞掉。
+    const uint64_t before=activityLog_.lastId();
+    try { dispatch(scoped); }
+    catch(const std::exception& e) {
+        status_=std::string("操作失败：")+e.what();
+        if(activityLog_.lastId()==before)
+            activityLog_.record(scoped.value("method",std::string("invalid")),scope_,"human",false,
+                ActivityLog::describeRequest(scoped),e.what(),Json{{"entry","request"}});
+    }
+}
 bool Editor::requestClose() { closeDialog_=workspace_.projectDirty(); return !closeDialog_; }
 void Editor::execute(Json commands) { attempt({{"method","apply"},{"args",{{"commands",commands}}}}); }
 void Editor::palette() {
@@ -627,7 +785,27 @@ void Editor::canvas(ImVec2 size) {
         for(float y=std::fmod(origin_.y-start.y,zoom_);y<size.y;y+=zoom_) draw->AddLine({start.x,start.y+y},{start.x+size.x,start.y+y},IM_COL32(228,231,233,255));
     }
     Json displayObjects=scope_=="component"?components::materialize(active().scene()):active().scene()["objects"];
-    if(fitRequested_) { try { fitCanvas(start,size,displayObjects); } catch(const std::exception& e) { status_=e.what(); } fitRequested_=false; }
+    if(fitRequested_) {
+        try {
+            // 文字与公式的标称像素基准（referenceZoom_）只在文档刚替换/载入
+            // （referenceZoom_<=0）时由一次拟合确定。这次拟合必须按「编辑画布」的
+            // 宽度进行：右侧操作日志是可收起、可拖动、可整栏让位的只读面板，若让它
+            // 参与基准拟合，同一个文档在日志栏展开/收起时会得到不同的标称像素基准，
+            // 而离屏导出（fit 视口）正是按这个基准缩放文字与公式的——那会变成
+            // 「改布局就改导出像素」。这里先用编辑画布宽度求出基准，再按真实画布
+            // 拟合一次显示用的缩放；两次都以 canvasScale()==1 计算，与没有日志栏时
+            // 的算术完全一致。
+            if(referenceZoom_<=0.f && editingCanvasWidth_>size.x+0.5f) {
+                const ImVec2 savedPan=pan_,savedOrigin=origin_;
+                fitCanvas(start,{editingCanvasWidth_,size.y},displayObjects);
+                const float baseline=referenceZoom_>0.f?referenceZoom_:zoom_;
+                pan_=savedPan;origin_=savedOrigin;zoom_=baseline;   // 真实画布按基准比例拟合
+                referenceZoom_=baseline;
+            }
+            fitCanvas(start,size,displayObjects);
+        } catch(const std::exception& e) { status_=e.what(); }
+        fitRequested_=false;
+    }
     std::string hit;
     for(auto o:displayObjects) {
         try {
@@ -733,6 +911,9 @@ void Editor::draw(float dt) {
         style.Colors[ImGuiCol_Header]={.28f,.37f,.46f,1};style.Colors[ImGuiCol_CheckMark]={.95f,.58f,.22f,1};
         styleReady_=true;
     }
+    // 本帧后台任务进度的呈现位置由这一帧的实际绘制决定（日志栏内 / 兜底浮层 /
+    // 没画）；每帧先清空，再由真正画了进度的地方写回。
+    jobsSurface_="none";
     active().advance(dt); dirty_=workspace_.projectDirty(); auto* viewport=ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos); ImGui::SetNextWindowSize(viewport->WorkSize);
     ImGui::Begin("物理示意编辑器",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_MenuBar);
@@ -781,6 +962,8 @@ void Editor::draw(float dt) {
         if(ImGui::Button("关闭草稿"))attempt({{"method","close_component"},{"args",{{"discard",true}}}});ImGui::SameLine();
     }
     if(ImGui::Button(historyOpen_?"[编辑历史]":"编辑历史"))historyOpen_=!historyOpen_;ImGui::SameLine();
+    // 操作日志是默认可见的右侧额外侧栏；F9 与按钮等效。
+    if(ImGui::Button(activityOpen_?"[操作日志]":"操作日志"))activityOpen_=!activityOpen_;ImGui::SameLine();
     ImGui::Checkbox("跟随 MCP",&followMcp_);ImGui::SameLine();ImGui::Checkbox("网格",&grid_);ImGui::SameLine();ImGui::Checkbox("轨迹",&trails_);ImGui::SameLine();
     if(ImGui::Button("适应画布"))fitRequested_=true;
     auto& io=ImGui::GetIO();if(!io.WantTextInput && !ImGui::IsPopupOpen("",ImGuiPopupFlags_AnyPopupId)) {
@@ -788,6 +971,7 @@ void Editor::draw(float dt) {
         if(io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y,false))attempt({{"method","redo"}});
         if(io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S,false))attempt({{"method","save_project"},{"args",{{"path",projectPath_},{"overwrite",true}}}});
         if(ImGui::IsKeyPressed(ImGuiKey_Space,false))attempt({{"method","playback"},{"args",{{"playing",!active().playing()}}}});
+        if(ImGui::IsKeyPressed(ImGuiKey_F9,false))activityOpen_=!activityOpen_;
     }
     const ImVec2 content=ImGui::GetContentRegionAvail();
     const float width=std::max(content.x,1.f),contentHeight=std::max(content.y,1.f);
@@ -801,19 +985,46 @@ void Editor::draw(float dt) {
         if(maxBottom>=80.f) bottom=std::clamp(bottomHeight_,std::min(120.f,maxBottom),maxBottom);
     }
     const float height=std::min(std::max(contentHeight-toolbarReserve-bottom,1.f),contentHeight);
-    float sidebar=sidebarWidth_;
-    if(width<340.f) sidebar=0.f;
-    else sidebar=std::clamp(sidebar,140.f,std::max(140.f,width-12.f-160.f));
-    sidebarWidth_=sidebar;
-    const float drawingWidth=std::max(1.f,width-sidebar-(sidebar>0.f?12.f:0.f));
-    ImGui::BeginChild("drawing",{drawingWidth,height});canvas(ImGui::GetContentRegionAvail());ImGui::EndChild();
-    if(sidebar>0.f) {
-        ImGui::SameLine(0,3);
-        ImGui::InvisibleButton("##vertical-splitter",{6,height});if(ImGui::IsItemActive())sidebarWidth_-=io.MouseDelta.x;if(ImGui::IsItemHovered())ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);ImGui::SameLine(0,3);
-        ImGui::BeginChild("sidebar",{0,height});
+    // 三列：左图元/属性、中画布、右操作日志。列宽由 computeEditorColumns 统一
+    // 裁剪（纯函数，可单独测试）：窄窗口先牺牲只读日志栏（按钮条 → 整栏让位），
+    // 再压缩承载编辑功能的左栏，画布始终 >=160 px，不会出现负宽度或把画布/侧栏
+    // 挤出屏幕。
+    const EditorColumns columns=computeEditorColumns(width,sidebarWidth_,activityWidth_,activityOpen_);
+    sidebarWidth_=columns.sidebar;activityWidth_=columns.activity;
+    // 文字/公式的标称像素基准只在需要重新确定时（刚替换/载入文档）使用这个宽度，
+    // 它与日志栏的展开/收起/拖动无关，见 canvas()。
+    editingCanvasWidth_=columns.editingDrawing;
+    // 画布列的屏幕左上角：日志栏收起时的兜底进度浮层锚在这里（见 jobsFallbackOverlay）。
+    const ImVec2 drawingOrigin=ImGui::GetCursorScreenPos();
+    ImGui::BeginChild("drawing",{columns.drawing,height});canvas(ImGui::GetContentRegionAvail());ImGui::EndChild();
+    if(columns.sidebar>0.f) {
+        ImGui::SameLine(0,columns.sidebarSplitter*.5f);
+        ImGui::InvisibleButton("##vertical-splitter",{columns.sidebarSplitter,height});
+        if(ImGui::IsItemActive())sidebarWidth_=activityClampSidebar(sidebarWidth_-io.MouseDelta.x);
+        if(ImGui::IsItemHovered())ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        ImGui::SameLine(0,columns.sidebarSplitter*.5f);
+        ImGui::BeginChild("sidebar",{columns.sidebar,height});
         const float paletteHeight=std::max(1.f,std::min(height*.45f,std::max(1.f,height-60.f)));
         ImGui::BeginChild("palette",{0,paletteHeight},ImGuiChildFlags_Borders);ImGui::BeginDisabled(active().previewing());palette();ImGui::EndDisabled();ImGui::EndChild();
         ImGui::BeginChild("properties",{0,0},ImGuiChildFlags_Borders);ImGui::BeginDisabled(active().previewing());inspector();ImGui::EndDisabled();ImGui::EndChild();ImGui::EndChild();
+    }
+    if(columns.activityShown) {
+        if(columns.activitySplitter>0.f) {
+            ImGui::SameLine(0,columns.activitySplitter*.5f);
+            ImGui::InvisibleButton("##activity-splitter",{columns.activitySplitter,height});
+            if(ImGui::IsItemActive())activityWidth_=std::clamp(activityWidth_-io.MouseDelta.x,240.f,700.f);
+            if(ImGui::IsItemHovered())ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            ImGui::SameLine(0,columns.activitySplitter*.5f);
+        } else {
+            // A collapsed log still belongs to the same row as the canvas.
+            ImGui::SameLine(0,6.f);
+        }
+        // 日志栏必须和左栏一样被限制在 {宽度, 画布高度} 的子窗口里：栏内的列表用
+        // 高度 0（填满剩余空间）绘制，如果直接在主窗口里画，它会一路吃到窗口底部，
+        // 把下面的编辑历史/动画面板和状态行挤出可视区域（鼠标就再也点不到它们）。
+        ImGui::BeginChild("activity",{columns.activity,height});
+        activityPanel(columns);
+        ImGui::EndChild();
     }
     if(expanded && bottom>0.f){ImGui::InvisibleButton("##horizontal-splitter",{-1,5});if(ImGui::IsItemActive())bottomHeight_-=io.MouseDelta.y;if(ImGui::IsItemHovered())ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);}
     ImGui::BeginDisabled(active().previewing());
@@ -826,7 +1037,24 @@ void Editor::draw(float dt) {
     ImGui::EndDisabled();
     if(historyOpen_ && bottom>0.f)historyPanel();else if(animationWorkspace_ && bottom>0.f){ImGui::BeginChild("animation-workspace",{0,bottom},ImGuiChildFlags_Borders);animationPanel();ImGui::EndChild();}
     if(active().previewing()){ImGui::TextColored({1,.6f,.15f,1},"历史预览 r%llu · 只读",(unsigned long long)active().displayRevision());ImGui::SameLine();if(ImGui::SmallButton("返回当前状态"))attempt({{"method","preview"}});}
-    ImGui::TextUnformatted(status_.c_str());storeLayout();projectDialog();exportDialog();jobsPanel();
+    // 状态行是单行的：导出失败原因里常常带整条路径，直接画会被窗口右边缘裁掉。
+    // 这里按可用宽度省略并给 tooltip（活动日志里的同一条错误另有换行显示）。
+    {
+        const std::string statusShown=elideUtf8ToWidth(status_,ImGui::GetContentRegionAvail().x);
+        ImGui::TextUnformatted(statusShown.c_str());
+        if(statusShown!=status_ && ImGui::IsItemHovered()) ImGui::SetTooltip("%s",status_.c_str());
+    }
+    // 日志栏收起（F9）、只剩按钮条或整栏让位时，后台任务进度**不能**再画在这条
+    // 正常布局流的末尾：画布高度已经吃满剩余空间，那几行会被状态行与播放控件挤出
+    // 窗口底部，进度与「取消任务」就都点不到了（真实截图即如此）。落点由
+    // jobPanelSurface() 统一决定（冒烟测试断言同一个函数）：日志栏画不下就改画在
+    // jobsFallbackOverlay 的固定浮层里——它不参与主布局，画布尺寸/拟合基准/离屏
+    // 导出取景都不受影响。
+    if(std::string(jobPanelSurface(anyJobRunning(),columns.activityShown,columns.activityBar))=="overlay") {
+        jobsFallbackOverlay(drawingOrigin,columns.drawing);
+        jobsSurface_="overlay";
+    }
+    storeLayout();projectDialog();exportDialog();
     if(closeDialog_) { ImGui::OpenPopup("保存修改？"); closeDialog_=false; }
     if(ImGui::BeginPopupModal("保存修改？",nullptr,ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted("工程有未保存的修改。保存工程会包含场景、草稿与历史。");
@@ -886,6 +1114,154 @@ void Editor::historyPanel() {
     }
     if(ImGui::CollapsingHeader("记录详情 / 磁盘日志")) { ImGui::TextWrapped("%s",page["journalPath"].get_ref<const std::string&>().c_str()); if(!historySelection_.is_null()) ImGui::TextUnformatted(historySelection_.dump(2).c_str()); }
     ImGui::EndChild();
+}
+// ---------------------------------------------------------------------------
+// 右侧「操作日志」侧栏。它显示来自界面与 MCP 的实际操作（含范围、时间、成败），
+// 与底部撤销历史互不影响：这里不回退文档，撤销历史也不分担操作记录。
+// 折叠态只占一条 24 px 的展开按钮，宽窗口下也不会把画布挤没。
+// ---------------------------------------------------------------------------
+void Editor::activityPanel(EditorColumns columns) {
+    activityVisible_=columns.activityShown;
+    activityCollapsedBar_=columns.activityBar||!activityOpen_;
+    activityFollowing_=false;
+    if(!columns.activityShown) { activityVisible_=false; return; }
+    // 折叠态：用户收起，或窗口太窄只放得下一条按钮条。点击按钮会在下一帧重新
+    // 计算列宽并画出完整侧栏（窗口够宽时）。外层 child 已经把这一栏限制在
+    // {columns.activity, 画布高度} 内，所以按钮直接填满它。
+    if(!activityOpen_ || columns.activityBar) {
+        if(ImGui::Button("日\n志",{-1,-1})) activityOpen_=true;
+        if(ImGui::IsItemHovered()) ImGui::SetTooltip(activityOpen_
+            ?"窗口太窄：日志栏只显示按钮条，拉宽窗口或收起左侧面板即可展开"
+            :"展开操作日志（F9）");
+        return;
+    }
+    const ImGuiStyle& style=ImGui::GetStyle();
+    // 标题行：先明确这是「操作日志」（与底部可回退的「编辑历史」是两回事），再给
+    // 收起入口。按钮用纯中文，不用 ▶ 之类的字符——交互式字体图集只覆盖 ASCII/
+    // Latin-1/通用标点/CJK 与数学补充区，几何图形区（U+25xx）没有字形，真实截图里
+    // 「收起 ▶」就渲染成了「收起 ?」。
+    // 头部/筛选/进度都用 AutoResizeY 子窗口按内容取高：栏宽 240~340 px 时行内容
+    // 放不下会换行，写死高度会把换行后的内容裁掉或压出一条滚动条。
+    ImGui::BeginChild("activity-header",{0,0},ImGuiChildFlags_Borders|ImGuiChildFlags_AutoResizeY);
+    const float headerWidth=ImGui::GetContentRegionAvail().x;
+    const float titleWidth=ImGui::CalcTextSize("操作日志").x;
+    const float collapseWidth=ImGui::CalcTextSize("收起日志").x+style.FramePadding.x*2.f;
+    const float followWidth=ImGui::GetFrameHeight()+style.ItemInnerSpacing.x+ImGui::CalcTextSize("自动跟随").x;
+    ImGui::TextUnformatted("操作日志");
+    if(titleWidth+style.ItemSpacing.x+collapseWidth<=headerWidth) ImGui::SameLine();
+    if(ImGui::SmallButton("收起日志")) activityOpen_=false;
+    if(ImGui::IsItemHovered()) ImGui::SetTooltip("收起右侧日志栏（F9 重新展开）");
+    if(titleWidth+collapseWidth+followWidth+style.ItemSpacing.x*2.f<=headerWidth) ImGui::SameLine();
+    ImGui::Checkbox("自动跟随",&activityFollow_);
+    // 变参只传 const char*：std::string 作为可变参数是不可移植的（C4840）。
+    char countText[96]{};
+    if(activityLog_.dropped())
+        std::snprintf(countText,sizeof(countText),"最近 %zu / %zu 条 · 已淘汰 %llu 条",activityLog_.size(),
+            ActivityLog::kCapacity,static_cast<unsigned long long>(activityLog_.dropped()));
+    else std::snprintf(countText,sizeof(countText),"最近 %zu / %zu 条",activityLog_.size(),ActivityLog::kCapacity);
+    const float clearWidth=ImGui::CalcTextSize("清空").x+style.FramePadding.x*2.f;
+    ImGui::TextDisabled("%s",countText);
+    if(ImGui::CalcTextSize(countText).x+style.ItemSpacing.x+clearWidth<=headerWidth) ImGui::SameLine();
+    if(ImGui::SmallButton("清空")) { activityLog_.clear(); activityAfter_=0; activityLastId_=0; }
+    ImGui::EndChild();
+
+    // 后台任务进度紧跟标题：导出对话框关闭后它仍然可见，MCP 触发的任务也走同一份
+    // state。AutoResizeY 让这一块只占内容高度，日志列表拿走剩下的空间。
+    if(anyJobRunning()) {
+        ImGui::BeginChild("activity-jobs",{0,0},ImGuiChildFlags_Borders|ImGuiChildFlags_AutoResizeY);
+        ImGui::TextUnformatted("后台任务进度");
+        jobsPanel();
+        ImGui::EndChild();
+    }
+    // 走不到这里时（日志栏收起/整栏让位）由 draw() 的兜底浮层负责，两处用同一个判断。
+    jobsSurface_=jobPanelSurface(anyJobRunning(),columns.activityShown,columns.activityBar);
+
+    ImGui::BeginChild("activity-filter",{0,0},ImGuiChildFlags_Borders|ImGuiChildFlags_AutoResizeY);
+    const float filterWidth=ImGui::GetContentRegionAvail().x;
+    const auto checkWidth=[&](const char* label){return ImGui::GetFrameHeight()+style.ItemInnerSpacing.x+ImGui::CalcTextSize(label).x;};
+    const float filterButtonWidth=ImGui::CalcTextSize("筛选…").x+style.FramePadding.x*2.f;
+    const float filterChecksWidth=checkWidth("界面")+checkWidth("MCP")+checkWidth("失败")+style.ItemSpacing.x*2.f;
+    // 三个勾选框在窄栏里并排放不下：整组换到下一行，而不是让「失败」被栏右边缘裁掉。
+    const bool filterOneLine=filterButtonWidth+style.ItemSpacing.x+filterChecksWidth<=filterWidth;
+    if(ImGui::Button("筛选…")) ImGui::OpenPopup("activity-filter-popup");
+    if(filterOneLine) ImGui::SameLine(); ImGui::Checkbox("界面",&activityShowUi_);
+    if(filterOneLine) ImGui::SameLine(); ImGui::Checkbox("MCP",&activityShowMcp_);
+    if(filterOneLine) ImGui::SameLine(); ImGui::Checkbox("失败",&activityShowFailed_);
+    if(ImGui::BeginPopup("activity-filter-popup")) {
+        ImGui::Checkbox("人类界面 (human)",&activityShowUi_);
+        ImGui::Checkbox("MCP (mcp)",&activityShowMcp_);
+        ImGui::Checkbox("失败 / 警告",&activityShowFailed_);
+        ImGui::Separator();
+        ImGui::Checkbox("显示只读查询（默认静默）",&activityShowQuiet_);
+        ImGui::TextDisabled("查询类请求成功时不记录，避免轮询刷屏；\n它们一旦失败会立刻出现。");
+        ImGui::Separator();
+        if(ImGui::Button("全选")) { activityShowUi_=activityShowMcp_=activityShowFailed_=true; }
+        ImGui::SameLine(); if(ImGui::Button("仅失败")) { activityShowUi_=activityShowMcp_=false; activityShowFailed_=true; }
+        ImGui::EndPopup();
+    }
+    // 这里必须换行（TextWrapped）：240~340 px 的栏宽下这一句以前被栏右边缘裁掉一半。
+    ImGui::TextWrapped("界面 / MCP 使用同一元操作，日志格式一致；此处只显示，不影响撤销历史。");
+    ImGui::EndChild();
+
+    ImGui::BeginChild("activity-list",{0,0},ImGuiChildFlags_Borders);
+    const float period=std::max(1000.f,ImGui::GetIO().DeltaTime*1000.f);
+    bool createdNew=false;
+    for(const auto& item:activityLog_.items()) {
+        if(item.id<activityAfter_) continue;
+        const bool showSource=item.source=="mcp"?activityShowMcp_:item.source=="job"?activityShowMcp_:activityShowUi_;
+        const bool failed=!item.succeeded();
+        if(!showSource || (failed && !activityShowFailed_)) continue;
+        // 失败的查询永远可见；成功的查询默认静默（除非显式打开）。
+        if(item.query && item.succeeded() && !activityShowQuiet_) continue;
+        createdNew=true;
+        ImGui::PushID(static_cast<int>(item.id));
+        const ImVec4 color=activityStatusColor(item);
+        ImGui::TextColored(color,"%s",activityStatusText(item));
+        ImGui::SameLine();
+        const std::string clock=item.utc.size()>=19?item.utc.substr(11,8):item.utc;
+        const unsigned age=static_cast<unsigned>(std::min<double>(9999.,
+            (static_cast<double>(activityNewestSeen_)-static_cast<double>(item.id))*period*.001));
+        const std::string ageText=age?" · "+std::to_string(age)+"s前":"";
+        ImGui::TextDisabled("%s · %s · %s · %s%s",clock.c_str(),activitySourceLabel(item.source),
+            activityScopeLabel(item.scope),item.method.c_str(),ageText.c_str());
+        if(item.repeats>1) { ImGui::SameLine(); ImGui::TextDisabled("连续 %u 次",item.repeats); }
+        // 摘要常常是一条完整路径（`export_animation output=D:\...`）。Selectable 不会
+        // 换行，240~340 px 的栏宽下会被右边缘裁掉；这里按可用宽度省略，完整文本由
+        // tooltip 给出（详情面板里也仍然逐字可读）。
+        const std::string summaryText="  "+item.summary;
+        const float summaryWidth=ImGui::GetContentRegionAvail().x-ImGui::GetStyle().ItemSpacing.x;
+        const std::string shownSummary=elideUtf8ToWidth(summaryText,summaryWidth);
+        if(ImGui::Selectable(shownSummary.c_str(),activityDetailOpen_ && activityLastId_==item.id)) {
+            activityLastId_=item.id; activityDetailOpen_=true;
+        }
+        if(shownSummary!=summaryText && ImGui::IsItemHovered()) ImGui::SetTooltip("%s",item.summary.c_str());
+        if(!item.error.empty() && item.error.find("日志")==std::string::npos)
+            ImGui::TextWrapped("  %s",item.error.c_str());
+        if(activityDetailOpen_ && activityLastId_==item.id) {
+            if(!item.error.empty()) ImGui::TextWrapped("原因：%s",item.error.c_str());
+            ImGui::TextDisabled("id %llu · utc %s · source %s · scope %s · method %s · status %s",
+                (unsigned long long)item.id,item.utc.c_str(),item.source.c_str(),item.scope.c_str(),
+                item.method.c_str(),item.status.c_str());
+            if(!item.detail.is_null() && !item.detail.empty()) {
+                const std::string detail=item.detail.dump();
+                ImGui::TextWrapped("%s",detail.c_str());
+            }
+            ImGui::TextDisabled("详情仅供查看：撤销/重做请用底部「编辑历史」。");
+        }
+        ImGui::PopID();
+    }
+    if(!createdNew) ImGui::TextDisabled("（无匹配记录：可调整筛选，或等待界面/MCP 操作）");
+    // 自动跟随：只有用户本来就贴在末尾时才滚到最新，往上翻不会被抢回。
+    if(activityFollow_) {
+        const float scrollY=ImGui::GetScrollY(),scrollMax=ImGui::GetScrollMaxY();
+        activityFollowing_=scrollMax<=1.f || scrollY>=scrollMax-4.f;
+        if(activityFollowing_ && activityLastId_!=activityNewestSeen_) ImGui::SetScrollHereY(1.f);
+    }
+    ImGui::EndChild();
+    // activityAfter_ 只丢掉被容量上限淘汰的旧记录；activityNewestSeen_ 用于自动
+    // 跟随的「有没有新记录」判断，用户往上翻时不会被抢回末尾。
+    activityNewestSeen_=activityLog_.lastId();
+    activityAfter_=activityLog_.firstAvailableId();
 }
 void Editor::smokeScenario(int scenario) {
     if(scenario==0) dispatch({{"method","apply"},{"args",{{"commands",Json::array({{{"op","create"},{"id","smoke-circle"},{"type","circle"}}})}}}});
@@ -985,6 +1361,77 @@ void Editor::smokeAfterFrame(unsigned frame) {
     }
 }
 void Editor::smokeCheck() {
+    // 操作日志侧栏：真实界面/MCP 操作必须被记录，查询不能刷屏，失败必须可见。
+    // 这些断言直接跑在真实 smoke 输入之后，因此它们验证的是接线而不是纯函数。
+    {
+        const Json before=activitySnapshot();
+        const uint64_t historyBefore=active().history()["lastId"].get<uint64_t>();
+        if(active().object("smoke-circle")["properties"]["x"]!=2) throw std::runtime_error("Editor history smoke check failed");
+        if(!before["sidebar"].value("open",false)) throw std::runtime_error("The operation log sidebar is not enabled");
+        if(!activityVisible_) throw std::runtime_error("The operation log sidebar was not laid out during the smoke run");
+        if(activityCollapsedBar_) throw std::runtime_error("The operation log sidebar collapsed inside a wide window");
+        // 真实点击与 MCP 编辑都必须出现。
+        const auto recorded=[&](const Json& page,const char* method,const char* source) {
+            for(const auto& entry:page["entries"])
+                if(entry["method"]==method && entry["source"]==source) return true;
+            return false;
+        };
+        if(!recorded(before,"apply","human")) throw std::runtime_error("A human palette/drag edit never reached the operation log");
+        if(!recorded(before,"apply","mcp")) throw std::runtime_error("An MCP edit never reached the operation log");
+        if(!recorded(before,"undo","human") || !recorded(before,"redo","human"))
+            throw std::runtime_error("Undo/redo never reached the operation log");
+        if(recorded(before,"get_scene","human") || recorded(before,"get_scene","mcp"))
+            throw std::runtime_error("A successful read-only query polluted the operation log");
+        // 被拒绝的请求必须可见，而且不改变文档。
+        const uint64_t rejectedEvent=active().history()["lastId"].get<uint64_t>();
+        const uint64_t rejectedRevision=active().revision();
+        try { dispatch({{"method","apply"},{"args",{{"commands",Json::array({{{"op","delete"},{"id","missing-smoke"}}})}}}}, "mcp"); }
+        catch(const std::exception&) {}
+        const Json afterFailure=activityLog_.query(0,ActivityLog::kCapacity);
+        bool failedVisible=false;
+        for(const auto& entry:afterFailure["entries"])
+            if(entry["status"]=="error" && entry["method"]=="apply") failedVisible=true;
+        if(!failedVisible) throw std::runtime_error("A rejected operation was not visible in the operation log");
+        // 旧 journal（active().history() / get_history）是**文档**事件日志，它也会把
+        // 被拒绝的请求记成一条 status="rejected" 的事件——这是既有行为，不是缺陷。
+        // 正确的断言是「拒绝被记成 rejected 且没有推进修订」，而不是「拒绝不写 journal」。
+        const auto journal=active().history(rejectedEvent,1);
+        if(journal["lastId"].get<uint64_t>()!=rejectedEvent+1 || journal["entries"].empty())
+            throw std::runtime_error("A rejected operation was not journalled");
+        const auto& newest=journal["entries"].back();
+        if(newest.value("status",std::string())!="rejected")
+            throw std::runtime_error("A rejected operation was journalled as a successful transaction");
+        if(newest.value("afterRevision",uint64_t(0))!=rejectedRevision || active().revision()!=rejectedRevision)
+            throw std::runtime_error("A rejected operation still advanced the document revision");
+        // 只读查询（get_activity_log）绝不能改动日志本身。
+        const size_t logSize=activityLog_.size();
+        const auto page=dispatch({{"method","get_activity_log"},{"args",{{"after",0},{"limit",5}}}});
+        if(activityLog_.size()!=logSize) throw std::runtime_error("Querying the log changed the log");
+        if(page["count"].get<size_t>()!=5 || page["entries"].size()!=5)
+            throw std::runtime_error("get_activity_log ignored its bounded limit");
+        const auto lastEntry=page["entries"].back();
+        if(lastEntry["id"].get<uint64_t>()!=page["nextAfter"].get<uint64_t>())
+            throw std::runtime_error("get_activity_log's cursor does not match its last entry");
+        if(!page.contains("sidebar") || !page["sidebar"].value("independentOfHistory",false))
+            throw std::runtime_error("get_activity_log did not report sidebar state");
+        // 这一段 smoke 检查只被允许往 journal 里加那一条 reject：文档修订不变。
+        if(active().history()["lastId"].get<uint64_t>()!=historyBefore+1)
+            throw std::runtime_error("Activity-log smoke checks changed the document history");
+        if(active().revision()!=rejectedRevision)
+            throw std::runtime_error("Activity-log smoke checks changed the document revision");
+    }
+    // 后台任务进度的落点：日志栏完整显示时画在栏内；日志栏收起（F9）或窄到只剩
+    // 按钮条、乃至整栏让位时必须走固定浮层——否则进度和「取消任务」会像真实截图里
+    // 那样被挤出屏幕底部（没有可见落点）。没有任务在跑时两块都不画。
+    {
+        const auto surface=[&](bool running,bool shown,bool bar){return std::string(jobPanelSurface(running,shown,bar));};
+        if(surface(true,true,false)!="activity")
+            throw std::runtime_error("Job progress must stay inside the log column when that column is fully shown");
+        if(surface(true,true,true)!="overlay" || surface(true,false,false)!="overlay")
+            throw std::runtime_error("Job progress has no visible surface once the log column collapses to its button bar");
+        if(surface(false,true,false)!="none" || surface(false,false,false)!="none")
+            throw std::runtime_error("Job progress must not be drawn while no background job runs");
+    }
     if(active().object("smoke-circle")["properties"]["x"]!=2) throw std::runtime_error("Editor history smoke check failed");
     if(active().evaluate("ball",15.0/9.8).vy>1e-10) throw std::runtime_error("Editor motion smoke check failed");
     const Json text={{"type","text"},{"properties",{{"text","zoom probe"},{"size",20}}}};

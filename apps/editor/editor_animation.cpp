@@ -13,17 +13,20 @@ bool editNumber(const char* label,double& value) {
     char* end=nullptr;double result=std::strtod(buffer,&end);if(end==buffer || *end || !std::isfinite(result))return false;value=result;return true;
 }
 }
+static float clampSidebarWidth(float value) { return std::clamp(value,140.f,700.f); }
 void Editor::storeLayout() {
     workspace_.layout()={{"workspace",animationWorkspace_?"animation":"layout"},{"sidebarWidth",sidebarWidth_},
         {"bottomHeight",bottomHeight_},{"historyOpen",historyOpen_},{"grid",grid_},{"trails",trails_},{"followMcp",followMcp_},
         {"scope",scope_},{"selected",selected_},{"channel",channel_},{"zoom",zoom_},{"pan",{pan_.x,pan_.y}},
         {"referenceZoom",referenceZoom_>0.f?referenceZoom_:zoom_}};
+    storeActivityState();
 }
 void Editor::applyLayout() {
     const auto& l=workspace_.layout();
     animationWorkspace_=l.value("workspace",std::string("layout"))=="animation";
-    sidebarWidth_=std::clamp(l.value("sidebarWidth",320.f),260.f,700.f);bottomHeight_=std::clamp(l.value("bottomHeight",260.f),180.f,700.f);
+    sidebarWidth_=clampSidebarWidth(l.value("sidebarWidth",320.f));bottomHeight_=std::clamp(l.value("bottomHeight",260.f),180.f,700.f);
     historyOpen_=l.value("historyOpen",false);grid_=l.value("grid",false);trails_=l.value("trails",true);followMcp_=l.value("followMcp",true);
+    applyActivityState(l);
     switchScope(l.value("scope",std::string("scene"))=="component" && workspace_.hasComponent()?"component":"scene");
     selected_=l.value("selected",std::string());channel_=l.value("channel",std::string("x"));
     zoom_=std::clamp(l.value("zoom",35.f),8.f,1200.f);if(l.contains("pan")){pan_={l["pan"][0],l["pan"][1]};}

@@ -1,3 +1,33 @@
+# 导出提速、操作日志与实时进度 · 2026-09-23
+
+范围：优化离屏读回与 PNG 编码，新增右侧人类/MCP 操作日志和持续可见的后台任务进度；完成失败、取消和临时目录清理检查。正式程序仍由 `run-editor.ps1` / `run-editor-mcp.ps1` 从当前源码构建。
+
+## 性能与画面
+
+同一冻结的 Write 演示场景、Release、本机同一 GPU，分别导出 30 帧 PNG。性能测量关闭 validation，窗口与失败路径另开 validation / synchronization validation 验证。基线为 `0f2c14c`，表中的时间是帧生成耗时，**不包含 MP4 编码，不代表完整视频导出的加速比**。
+
+| 尺寸 | 优化前 | 优化后 | 加速比 |
+| --- | ---: | ---: | ---: |
+| 1280×720 | 10.710 s | 0.647 s | 16.55× |
+| 2560×1440 | 40.938 s | 1.148 s | 35.66× |
+
+- 两种尺寸各 30 帧的 PNG SHA-256 前后全部一致。证据：`build/verification/render-benchmark-baseline/result.json` 与 `build/verification/render-benchmark-final-20260922/result.json`。
+- 原来已经使用 Vulkan GPU 渲染；此次主要改善主机读回内存访问和 PNG 并行编码，没有改用 NVENC。编码队列有界，按保守工作内存估算限制线程数；该估算不是整个进程的硬内存上限。
+- 实际可见窗口导出 MP4：2560×1440、60 fps、6.000 s、360 帧，端到端约 **10.43 s**（包含进度采样、截图与窗口操作）。视频参数经 ffprobe 核对。证据：`build/verification/current-ui-ce4853d336a24229af52e46323227d52/` 的 `report.json`、`write-2k.mp4` 与截图。
+
+## 窗口与回归
+
+- **Release 全量 25/25 通过，117.98 s**：`ctest --test-dir build/vs2022 -C Release --output-on-failure`。其中公式/导出 Python 全量 **166 项通过**。日志：`build/verification/2026-09-23-final-release.log`。
+- **Debug 专项 6/6 通过，40.28 s**：`editor_smoke`、`editor_activity_log_live`、`editor_export_progress_live`、`editor_offscreen_failure`、`editor_write_rendering`、`editor_background_job`。日志：`build/verification/2026-09-23-final-debug.log`。本次不将其表述为 Debug 全量回归。
+- 实际窗口核对右侧日志、成功/失败记录、后台任务进度、窄窗口和 F9 收起日志后的不透明进度浮层；播放条仍可见。包含调整窗口、最小化/恢复、正常关闭，父窗口和导出进程的 Vulkan / 同步校验无错误或警告。
+- 操作日志独立于撤销历史；查询不刷屏。增量查询覆盖合并记录的更新、日志重置和旧记录淘汰。后台任务完成、失败、取消均有终态记录。
+- 实际取消导出断言临时帧目录已删除；失败后进度同步为失败，不残留“编码中”。归属检查拒绝伪造记录、目标路径改写和目录联接越界，已提交输出保留。
+- 写帧失败（含最后一帧）不会产生假成功；窗口缩放时离屏导出不借用窗口资源。后台进度测试改用有超时的样本确认，避免机器繁忙时仅靠固定休眠漏掉轮询；保留重复轮询、单调更新和读取限频断言。
+
+![日志收起后仍显示导出阶段、帧数、速率和本阶段预计剩余时间](editor-export-overlay.png)
+
+范围限制：仅验证本机 Windows / NVIDIA GeForce RTX 4060 Laptop GPU，未验证其他设备与驱动。MP4 仍由 CPU libx264 编码，复杂场景的加速比需单独测量。预计剩余时间只针对当前阶段；超大倍率的文字/公式仍受光栅精度限制。无法确认归属或仍被外部占用的临时目录会保留并报告原因。
+
 # 公式 Write 入场：结构/字形顺序 · 2026-09-16
 
 范围：生成公式书写计划、C++ 编辑器消费与校验、工程兼容、实际渲染与导出。外层从左到右，分式按“分数线→分子→分母”展开，主体后跟上下标及常见装饰。文字路径与原 alpha 缓存保持不变；公式示例采用逐单元完成的节奏（`stagger=1`）。
